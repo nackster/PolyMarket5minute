@@ -467,42 +467,58 @@ class RealTrader:
         if not hasattr(self, '_clob_client') or self._clob_client is None:
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-            self._clob_client = ClobClient(
-                CLOB_API,
-                key=self.config.polymarket.private_key,
-                chain_id=137,  # Polygon mainnet
-                signature_type=1,  # POLY_PROXY (funds are in Polymarket proxy wallet)
-            )
-            self._clob_client.set_api_creds(
-                self._clob_client.create_or_derive_api_creds()
-            )
-            # Set USDC allowance for CLOB contract (required before first trade)
+            # Try POLY_PROXY first (most Polymarket accounts), fall back to EOA
+            for sig_type, sig_name in [(1, "POLY_PROXY"), (0, "EOA")]:
+                try:
+                    client = ClobClient(
+                        CLOB_API,
+                        key=self.config.polymarket.private_key,
+                        chain_id=137,  # Polygon mainnet
+                        signature_type=sig_type,
+                    )
+                    # Log the wallet address for debugging
+                    addr = client.signer.address() if client.signer else "unknown"
+                    print(f"[{_ts()}]   Trying {sig_name} (sig_type={sig_type}), wallet={addr}")
+
+                    client.set_api_creds(client.create_or_derive_api_creds())
+
+                    # Check balance
+                    bal_info = client.get_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                    )
+                    print(f"[{_ts()}]   Balance/allowance: {bal_info}")
+
+                    balance = float(bal_info.get('balance', 0)) if isinstance(bal_info, dict) else 0
+                    if balance > 0:
+                        print(f"[{_ts()}]   Found balance ${balance/1e6:.2f} with {sig_name}")
+                        self._clob_client = client
+                        break
+                    else:
+                        print(f"[{_ts()}]   No balance with {sig_name}, trying next...")
+                except Exception as e:
+                    print(f"[{_ts()}]   {sig_name} failed: {e}")
+
+            # If no sig type had balance, default to POLY_PROXY
+            if self._clob_client is None:
+                print(f"[{_ts()}]   WARNING: No balance found with any sig type, using POLY_PROXY")
+                self._clob_client = ClobClient(
+                    CLOB_API,
+                    key=self.config.polymarket.private_key,
+                    chain_id=137,
+                    signature_type=1,
+                )
+                self._clob_client.set_api_creds(
+                    self._clob_client.create_or_derive_api_creds()
+                )
+
+            # Set USDC allowance for CLOB contract
             try:
-                allowance = self._clob_client.get_balance_allowance(
+                self._clob_client.update_balance_allowance(
                     BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                 )
-                print(f"[{_ts()}]   USDC allowance: {allowance}")
-                # If allowance is 0 or very low, set unlimited approval
-                if hasattr(allowance, 'allowance'):
-                    bal = float(allowance.allowance) if allowance.allowance else 0
-                else:
-                    bal = 0
-                if bal == 0:
-                    print(f"[{_ts()}]   Setting USDC allowance for CLOB...")
-                    self._clob_client.update_balance_allowance(
-                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-                    )
-                    print(f"[{_ts()}]   Allowance set successfully")
+                print(f"[{_ts()}]   Allowance set")
             except Exception as e:
-                print(f"[{_ts()}]   Allowance check/set: {e}")
-                # Try to set it anyway
-                try:
-                    self._clob_client.update_balance_allowance(
-                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-                    )
-                    print(f"[{_ts()}]   Allowance forced successfully")
-                except Exception as e2:
-                    print(f"[{_ts()}]   Allowance force failed: {e2}")
+                print(f"[{_ts()}]   Allowance set note: {e}")
             print(f"[{_ts()}]   CLOB client initialized")
         return self._clob_client
 
