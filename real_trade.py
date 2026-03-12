@@ -471,6 +471,7 @@ class RealTrader:
                 CLOB_API,
                 key=self.config.polymarket.private_key,
                 chain_id=137,  # Polygon mainnet
+                signature_type=1,  # POLY_PROXY (funds are in Polymarket proxy wallet)
             )
             self._clob_client.set_api_creds(
                 self._clob_client.create_or_derive_api_creds()
