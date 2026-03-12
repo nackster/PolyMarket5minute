@@ -472,13 +472,17 @@ class RealTrader:
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
 
+            proxy_addr = self.config.polymarket.proxy_address
             self._clob_client = ClobClient(
                 CLOB_API,
                 key=self.config.polymarket.private_key,
                 chain_id=137,  # Polygon mainnet
+                signature_type=1,  # POLY_PROXY
+                funder=proxy_addr if proxy_addr else None,
             )
             addr = self._clob_client.signer.address() if self._clob_client.signer else "unknown"
-            print(f"[{_ts()}]   Wallet: {addr}")
+            funder = self._clob_client.builder.funder
+            print(f"[{_ts()}]   Signer: {addr}, Funder: {funder}")
 
             self._clob_client.set_api_creds(
                 self._clob_client.create_or_derive_api_creds()
