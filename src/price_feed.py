@@ -1,4 +1,7 @@
-"""Real-time BTC price feed via Binance WebSocket."""
+"""Real-time BTC price feed via WebSocket with multi-source fallback.
+
+Tries in order: Binance global → Binance.US → Kraken → REST polling fallback.
+"""
 
 import asyncio
 import json
@@ -11,6 +14,30 @@ import websockets
 from src.config import BinanceConfig
 
 log = structlog.get_logger()
+
+# WebSocket sources to try in order (Binance global blocks US IPs with HTTP 451)
+WS_SOURCES = [
+    {
+        "name": "Binance",
+        "url": "wss://stream.binance.com:9443/ws/btcusdt@trade",
+        "parser": "binance",
+    },
+    {
+        "name": "Binance.US",
+        "url": "wss://stream.binance.us:9443/ws/btcusd@trade",
+        "parser": "binance",
+    },
+    {
+        "name": "Kraken",
+        "url": "wss://ws.kraken.com",
+        "parser": "kraken",
+        "subscribe": json.dumps({
+            "event": "subscribe",
+            "pair": ["XBT/USD"],
+            "subscription": {"name": "trade"},
+        }),
+    },
+]
 
 
 @dataclass
@@ -115,41 +142,131 @@ class PriceFeed:
         return variance ** 0.5
 
     async def start(self):
-        """Start the WebSocket price feed."""
+        """Start the price feed, trying multiple WebSocket sources."""
         self._running = True
-        log.info("price_feed_starting", url=self.config.ws_url)
 
         while self._running:
-            try:
-                async with websockets.connect(self.config.ws_url) as ws:
-                    self._ws = ws
-                    log.info("price_feed_connected")
-                    async for message in ws:
-                        if not self._running:
-                            break
-                        self._process_message(message)
-            except websockets.ConnectionClosed:
-                log.warning("price_feed_disconnected, reconnecting...")
-                await asyncio.sleep(1)
-            except Exception as e:
-                log.error("price_feed_error", error=str(e))
-                await asyncio.sleep(3)
+            # Try each WS source in order
+            connected = False
+            for source in WS_SOURCES:
+                if not self._running:
+                    return
+                try:
+                    log.info("price_feed_trying", source=source["name"],
+                             url=source["url"])
+                    async with websockets.connect(
+                        source["url"], ping_interval=20, ping_timeout=10
+                    ) as ws:
+                        self._ws = ws
+                        self._active_source = source
+
+                        # Send subscribe message if needed (e.g., Kraken)
+                        if "subscribe" in source:
+                            await ws.send(source["subscribe"])
+
+                        log.info("price_feed_connected", source=source["name"])
+                        connected = True
+                        async for message in ws:
+                            if not self._running:
+                                return
+                            self._process_message(message, source["parser"])
+                except websockets.ConnectionClosed:
+                    log.warning("price_feed_disconnected",
+                                source=source["name"])
+                except Exception as e:
+                    err = str(e)
+                    log.warning("price_feed_source_failed",
+                                source=source["name"], error=err)
+                    # If HTTP 451 (geo-blocked), skip to next source immediately
+                    if "451" in err:
+                        continue
+                    if connected:
+                        break  # Was working, try reconnecting to same source
+
+            # If all WS sources failed, fall back to REST polling
+            if not connected and self._running:
+                log.info("price_feed_rest_fallback",
+                         msg="All WebSocket sources failed, using REST polling")
+                await self._rest_poll_loop()
+
+            if self._running:
+                await asyncio.sleep(2)
+
+    async def _rest_poll_loop(self):
+        """Fallback: poll Kraken REST API for BTC price every 2 seconds."""
+        import aiohttp
+        log.info("price_feed_rest_polling", source="Kraken REST")
+        try:
+            async with aiohttp.ClientSession() as session:
+                while self._running:
+                    try:
+                        async with session.get(
+                            "https://api.kraken.com/0/public/Ticker?pair=XBTUSD",
+                            timeout=aiohttp.ClientTimeout(total=5),
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                result = data.get("result", {})
+                                pair = result.get("XXBTZUSD", result.get("XBTUSD", {}))
+                                if pair:
+                                    price = float(pair["c"][0])  # last trade price
+                                    vol = float(pair["c"][1])    # last trade volume
+                                    tick = Tick(
+                                        price=price,
+                                        volume=vol,
+                                        timestamp=time.time(),
+                                    )
+                                    self._current_price = tick.price
+                                    self.ticks.append(tick)
+                                    self._prune_old_ticks()
+                                    for cb in self._callbacks:
+                                        try:
+                                            cb(tick)
+                                        except Exception:
+                                            pass
+                    except Exception as e:
+                        log.warning("rest_poll_error", error=str(e))
+                    await asyncio.sleep(2)
+        except Exception as e:
+            log.error("rest_poll_session_error", error=str(e))
 
     def stop(self):
         """Stop the price feed."""
         self._running = False
         log.info("price_feed_stopped")
 
-    def _process_message(self, raw: str):
-        """Process a Binance trade message."""
+    def _process_message(self, raw: str, parser: str = "binance"):
+        """Process a WebSocket message based on the source parser."""
         try:
             data = json.loads(raw)
-            tick = Tick(
-                price=float(data["p"]),
-                volume=float(data["q"]),
-                timestamp=data["T"] / 1000.0,  # Binance sends ms
-                is_buyer_maker=data.get("m", False),
-            )
+
+            if parser == "binance":
+                tick = Tick(
+                    price=float(data["p"]),
+                    volume=float(data["q"]),
+                    timestamp=data["T"] / 1000.0,
+                    is_buyer_maker=data.get("m", False),
+                )
+            elif parser == "kraken":
+                # Kraken trade messages: [channelID, [[price, vol, time, side, type, misc], ...], "trade", "XBT/USD"]
+                if not isinstance(data, list) or len(data) < 3:
+                    return
+                if data[-2] != "trade":
+                    return  # skip non-trade messages (heartbeats, status, etc.)
+                trades = data[1]
+                if not trades:
+                    return
+                # Process the latest trade
+                t = trades[-1]
+                tick = Tick(
+                    price=float(t[0]),
+                    volume=float(t[1]),
+                    timestamp=float(t[2]),
+                    is_buyer_maker=(t[3] == "s"),  # "s" = sell, "b" = buy
+                )
+            else:
+                return
+
             self._current_price = tick.price
             self.ticks.append(tick)
             self._prune_old_ticks()
@@ -160,8 +277,8 @@ class PriceFeed:
                 except Exception as e:
                     log.error("tick_callback_error", error=str(e))
 
-        except (KeyError, ValueError, json.JSONDecodeError) as e:
-            log.warning("price_feed_parse_error", error=str(e))
+        except (KeyError, ValueError, json.JSONDecodeError, IndexError):
+            pass  # skip unparseable messages silently
 
     def _prune_old_ticks(self):
         """Remove ticks older than max_history_secs."""
