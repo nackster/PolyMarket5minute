@@ -466,6 +466,7 @@ class RealTrader:
         """Lazily init and cache the CLOB client for live orders."""
         if not hasattr(self, '_clob_client') or self._clob_client is None:
             from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
             self._clob_client = ClobClient(
                 CLOB_API,
                 key=self.config.polymarket.private_key,
@@ -474,6 +475,33 @@ class RealTrader:
             self._clob_client.set_api_creds(
                 self._clob_client.create_or_derive_api_creds()
             )
+            # Set USDC allowance for CLOB contract (required before first trade)
+            try:
+                allowance = self._clob_client.get_balance_allowance(
+                    BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                )
+                print(f"[{_ts()}]   USDC allowance: {allowance}")
+                # If allowance is 0 or very low, set unlimited approval
+                if hasattr(allowance, 'allowance'):
+                    bal = float(allowance.allowance) if allowance.allowance else 0
+                else:
+                    bal = 0
+                if bal == 0:
+                    print(f"[{_ts()}]   Setting USDC allowance for CLOB...")
+                    self._clob_client.update_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                    )
+                    print(f"[{_ts()}]   Allowance set successfully")
+            except Exception as e:
+                print(f"[{_ts()}]   Allowance check/set: {e}")
+                # Try to set it anyway
+                try:
+                    self._clob_client.update_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                    )
+                    print(f"[{_ts()}]   Allowance forced successfully")
+                except Exception as e2:
+                    print(f"[{_ts()}]   Allowance force failed: {e2}")
             print(f"[{_ts()}]   CLOB client initialized")
         return self._clob_client
 
