@@ -456,15 +456,19 @@ class RealTrader:
             reason=reason,
             entered_at=time.time(),
         )
-        self.open_positions.append(pos)
-
-        # In live mode, place real order
+        # In live mode, place real order — only track position if order succeeds
         if self.mode == "live":
-            self._place_order(pos)
+            if not self._place_order(pos):
+                # Order failed — don't track this position
+                self._traded_windows.discard(pos.market.window_start)
+                print(f"[{_ts()}]   Order failed — position NOT tracked, window reopened")
+                return
+
+        self.open_positions.append(pos)
 
     def _get_clob_client(self):
         """Lazily init and cache the CLOB client for live orders."""
-        if not hasattr(self, '_clob_client') or self._clob_client is None:
+        if not getattr(self, '_clob_client', None):
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
             # Try POLY_PROXY first (most Polymarket accounts), fall back to EOA
@@ -522,8 +526,8 @@ class RealTrader:
             print(f"[{_ts()}]   CLOB client initialized")
         return self._clob_client
 
-    def _place_order(self, pos: OpenPos):
-        """Place a real limit order on Polymarket CLOB."""
+    def _place_order(self, pos: OpenPos) -> bool:
+        """Place a real limit order on Polymarket CLOB. Returns True if successful."""
         token_id = (pos.market.token_id_up if pos.direction == "Up"
                     else pos.market.token_id_down)
         # Round price to 2 decimal places (Polymarket requirement)
@@ -547,9 +551,11 @@ class RealTrader:
             print(f"[{_ts()}]   Order response: {resp}")
             log.info("order_placed", direction=pos.direction, price=price,
                      size=size, response=resp)
+            return True
         except Exception as e:
             print(f"[{_ts()}]   {red(f'ORDER FAILED: {e}')}")
             log.error("order_failed", error=str(e))
+            return False
 
     async def _resolve_windows(self, now: float):
         """Resolve positions whose windows have ended."""
