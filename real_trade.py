@@ -472,20 +472,13 @@ class RealTrader:
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
 
-            proxy_addr = self.config.polymarket.proxy_address
-            print(f"[{_ts()}]   EOA key loaded, proxy={proxy_addr or 'not set'}")
-
-            # Use POLY_PROXY with funder=proxy wallet address
             self._clob_client = ClobClient(
                 CLOB_API,
                 key=self.config.polymarket.private_key,
                 chain_id=137,  # Polygon mainnet
-                signature_type=1,  # POLY_PROXY
-                funder=proxy_addr if proxy_addr else None,
             )
             addr = self._clob_client.signer.address() if self._clob_client.signer else "unknown"
-            print(f"[{_ts()}]   Signer (EOA): {addr}")
-            print(f"[{_ts()}]   Funder (proxy): {self._clob_client.builder.funder}")
+            print(f"[{_ts()}]   Wallet: {addr}")
 
             self._clob_client.set_api_creds(
                 self._clob_client.create_or_derive_api_creds()
@@ -500,14 +493,14 @@ class RealTrader:
             except Exception as e:
                 print(f"[{_ts()}]   Balance check: {e}")
 
-            # Set USDC allowance for CLOB contract
+            # Set USDC allowance
             try:
                 self._clob_client.update_balance_allowance(
                     BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                 )
                 print(f"[{_ts()}]   Allowance set")
             except Exception as e:
-                print(f"[{_ts()}]   Allowance set note: {e}")
+                print(f"[{_ts()}]   Allowance note: {e}")
             print(f"[{_ts()}]   CLOB client initialized")
         return self._clob_client
 
