@@ -1,0 +1,42 @@
+# Environment
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+.Python
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Data
+data/*.csv
+data/*.json
+!data/.gitkeep
+
+# Trade logs (contain position data)
+paper_trades.json
+live_trades.json
+real_trades.json
+
+# OS
+.DS_Store
+Thumbs.db
