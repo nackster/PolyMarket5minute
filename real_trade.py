@@ -471,49 +471,34 @@ class RealTrader:
         if not getattr(self, '_clob_client', None):
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-            # Try POLY_PROXY first (most Polymarket accounts), fall back to EOA
-            for sig_type, sig_name in [(1, "POLY_PROXY"), (0, "EOA")]:
-                try:
-                    client = ClobClient(
-                        CLOB_API,
-                        key=self.config.polymarket.private_key,
-                        chain_id=137,  # Polygon mainnet
-                        signature_type=sig_type,
-                    )
-                    # Log the wallet address for debugging
-                    addr = client.signer.address() if client.signer else "unknown"
-                    print(f"[{_ts()}]   Trying {sig_name} (sig_type={sig_type}), wallet={addr}")
 
-                    client.set_api_creds(client.create_or_derive_api_creds())
+            proxy_addr = self.config.polymarket.proxy_address
+            print(f"[{_ts()}]   EOA key loaded, proxy={proxy_addr or 'not set'}")
 
-                    # Check balance
-                    bal_info = client.get_balance_allowance(
-                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-                    )
-                    print(f"[{_ts()}]   Balance/allowance: {bal_info}")
+            # Use POLY_PROXY with funder=proxy wallet address
+            self._clob_client = ClobClient(
+                CLOB_API,
+                key=self.config.polymarket.private_key,
+                chain_id=137,  # Polygon mainnet
+                signature_type=1,  # POLY_PROXY
+                funder=proxy_addr if proxy_addr else None,
+            )
+            addr = self._clob_client.signer.address() if self._clob_client.signer else "unknown"
+            print(f"[{_ts()}]   Signer (EOA): {addr}")
+            print(f"[{_ts()}]   Funder (proxy): {self._clob_client.builder.funder}")
 
-                    balance = float(bal_info.get('balance', 0)) if isinstance(bal_info, dict) else 0
-                    if balance > 0:
-                        print(f"[{_ts()}]   Found balance ${balance/1e6:.2f} with {sig_name}")
-                        self._clob_client = client
-                        break
-                    else:
-                        print(f"[{_ts()}]   No balance with {sig_name}, trying next...")
-                except Exception as e:
-                    print(f"[{_ts()}]   {sig_name} failed: {e}")
+            self._clob_client.set_api_creds(
+                self._clob_client.create_or_derive_api_creds()
+            )
 
-            # If no sig type had balance, default to POLY_PROXY
-            if self._clob_client is None:
-                print(f"[{_ts()}]   WARNING: No balance found with any sig type, using POLY_PROXY")
-                self._clob_client = ClobClient(
-                    CLOB_API,
-                    key=self.config.polymarket.private_key,
-                    chain_id=137,
-                    signature_type=1,
+            # Check balance
+            try:
+                bal_info = self._clob_client.get_balance_allowance(
+                    BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                 )
-                self._clob_client.set_api_creds(
-                    self._clob_client.create_or_derive_api_creds()
-                )
+                print(f"[{_ts()}]   Balance/allowance: {bal_info}")
+            except Exception as e:
+                print(f"[{_ts()}]   Balance check: {e}")
 
             # Set USDC allowance for CLOB contract
             try:

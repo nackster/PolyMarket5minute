@@ -11,6 +11,7 @@ load_dotenv()
 class PolymarketConfig:
     api_key: str = os.getenv("POLYMARKET_API_KEY", "")
     private_key: str = os.getenv("POLYMARKET_PRIVATE_KEY", "")
+    proxy_address: str = os.getenv("POLYMARKET_PROXY_ADDRESS", "")
     api_url: str = os.getenv("POLYMARKET_API_URL", "https://clob.polymarket.com")
 
 
