@@ -636,7 +636,7 @@ class RealTrader:
         self.open_positions = still_open
 
     def _redeem_position(self, condition_id: str):
-        """Redeem resolved conditional tokens back to USDC.e on-chain."""
+        """Redeem resolved conditional tokens back to USDC.e on-chain (fire-and-forget)."""
         try:
             from web3 import Web3
             w3 = Web3(Web3.HTTPProvider('https://polygon-bor-rpc.publicnode.com'))
@@ -649,7 +649,7 @@ class RealTrader:
             ct_abi = [{'inputs':[{'name':'collateralToken','type':'address'},{'name':'parentCollectionId','type':'bytes32'},{'name':'conditionId','type':'bytes32'},{'name':'indexSets','type':'uint256[]'}],'name':'redeemPositions','outputs':[],'type':'function'}]
             ct = w3.eth.contract(address=CT, abi=ct_abi)
 
-            gas_price = int(w3.eth.gas_price * 1.5)
+            gas_price = int(w3.eth.gas_price * 2)  # 2x for faster confirmation
             nonce = w3.eth.get_transaction_count(addr)
 
             tx = ct.functions.redeemPositions(
@@ -663,12 +663,16 @@ class RealTrader:
             })
             signed = acct.sign_transaction(tx)
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
-            print(f"[{_ts()}]   Redeemed tokens: tx={tx_hash.hex()[:16]}... status={receipt.status}")
-            log.info("tokens_redeemed", condition_id=condition_id[:16], status=receipt.status)
+            # Fire-and-forget: don't block waiting for receipt
+            print(f"[{_ts()}]   Redeem tx sent: {tx_hash.hex()[:16]}...")
+            log.info("redeem_sent", condition_id=condition_id[:16], tx=tx_hash.hex()[:16])
         except Exception as e:
-            print(f"[{_ts()}]   Redeem note: {e}")
-            log.warning("redeem_failed", condition_id=condition_id[:16], error=str(e))
+            # Queue for retry later — not critical, can always redeem manually
+            if not hasattr(self, '_pending_redeems'):
+                self._pending_redeems = []
+            self._pending_redeems.append(condition_id)
+            print(f"[{_ts()}]   Redeem queued: {e}")
+            log.warning("redeem_queued", condition_id=condition_id[:16], error=str(e))
 
     def _print_status(self, window_start, secs_into):
         if not self.price_feed.has_data:
