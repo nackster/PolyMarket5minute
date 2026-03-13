@@ -473,29 +473,56 @@ class RealTrader:
             from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
 
             proxy_addr = self.config.polymarket.proxy_address
-            self._clob_client = ClobClient(
-                CLOB_API,
-                key=self.config.polymarket.private_key,
-                chain_id=137,  # Polygon mainnet
-                signature_type=1,  # POLY_PROXY
-                funder=proxy_addr if proxy_addr else None,
-            )
-            addr = self._clob_client.signer.address() if self._clob_client.signer else "unknown"
-            funder = self._clob_client.builder.funder
-            print(f"[{_ts()}]   Signer: {addr}, Funder: {funder}")
 
-            self._clob_client.set_api_creds(
-                self._clob_client.create_or_derive_api_creds()
-            )
-
-            # Check balance
-            try:
-                bal_info = self._clob_client.get_balance_allowance(
-                    BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            # Try both POLY_PROXY and EOA with derive (not create) API creds
+            for sig_type, sig_name in [(1, "POLY_PROXY"), (0, "EOA")]:
+                kwargs = dict(
+                    key=self.config.polymarket.private_key,
+                    chain_id=137,
+                    signature_type=sig_type,
                 )
-                print(f"[{_ts()}]   Balance/allowance: {bal_info}")
-            except Exception as e:
-                print(f"[{_ts()}]   Balance check: {e}")
+                if sig_type in (1, 2) and proxy_addr:
+                    kwargs['funder'] = proxy_addr
+
+                client = ClobClient(CLOB_API, **kwargs)
+                addr = client.signer.address()
+                funder = client.builder.funder
+                print(f"[{_ts()}]   Trying {sig_name}: signer={addr}, funder={funder}")
+
+                # Use derive_api_key (gets EXISTING creds) not create (makes NEW empty ones)
+                try:
+                    creds = client.derive_api_key(nonce=0)
+                    if creds:
+                        client.set_api_creds(creds)
+                        print(f"[{_ts()}]   Derived API key: {creds.api_key[:16]}...")
+                    else:
+                        print(f"[{_ts()}]   derive failed, trying create...")
+                        creds = client.create_or_derive_api_creds()
+                        client.set_api_creds(creds)
+                        print(f"[{_ts()}]   Created API key: {creds.api_key[:16]}...")
+                except Exception:
+                    creds = client.create_or_derive_api_creds()
+                    client.set_api_creds(creds)
+                    print(f"[{_ts()}]   Created API key: {creds.api_key[:16]}...")
+
+                # Check balance
+                try:
+                    bal_info = client.get_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                    )
+                    print(f"[{_ts()}]   Balance: {bal_info}")
+                    balance = float(bal_info.get('balance', 0)) if isinstance(bal_info, dict) else 0
+                    if balance > 0:
+                        print(f"[{_ts()}]   FOUND BALANCE: ${balance/1e6:.2f} with {sig_name}")
+                        self._clob_client = client
+                        break
+                except Exception as e:
+                    print(f"[{_ts()}]   Balance check: {e}")
+
+            if not getattr(self, '_clob_client', None):
+                # Default to POLY_PROXY if no balance found
+                print(f"[{_ts()}]   No balance found, using POLY_PROXY")
+                self._clob_client = client  # use last tried client
 
             # Set USDC allowance
             try:
