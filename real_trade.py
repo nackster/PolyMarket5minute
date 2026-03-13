@@ -316,6 +316,11 @@ class RealTrader:
         self._window_markets: dict[int, MarketInfo] = {}
         self._traded_windows: set[int] = set()  # windows we've already traded
 
+        # Redemption queue — batch redeem every 10 minutes
+        self._pending_redeems: list[str] = []  # condition_ids to redeem
+        self._last_redeem_time: float = 0.0
+        self._redeem_interval: float = 600.0  # 10 minutes
+
     def _request_shutdown(self):
         self._shutdown = True
 
@@ -627,16 +632,26 @@ class RealTrader:
             print(f"[{_ts()}]   {result_str}  PnL={_eq(pnl)}  "
                   f"Equity={_eq(self.equity)}")
 
-            # Auto-redeem conditional tokens back to USDC.e
+            # Queue conditional tokens for batch redemption
             if self.mode == "live":
-                self._redeem_position(pos.market.condition_id)
+                self._pending_redeems.append(pos.market.condition_id)
 
             self._save_state()
 
         self.open_positions = still_open
 
-    def _redeem_position(self, condition_id: str):
-        """Redeem resolved conditional tokens back to USDC.e on-chain (fire-and-forget)."""
+        # Batch redeem every 10 minutes
+        if (self.mode == "live" and self._pending_redeems
+                and time.time() - self._last_redeem_time > self._redeem_interval):
+            self._batch_redeem()
+
+    def _batch_redeem(self):
+        """Batch redeem all queued conditional tokens back to USDC.e."""
+        to_redeem = list(self._pending_redeems)
+        if not to_redeem:
+            return
+
+        print(f"\n[{_ts()}] Redeeming {len(to_redeem)} positions...")
         try:
             from web3 import Web3
             w3 = Web3(Web3.HTTPProvider('https://polygon-bor-rpc.publicnode.com'))
@@ -649,30 +664,36 @@ class RealTrader:
             ct_abi = [{'inputs':[{'name':'collateralToken','type':'address'},{'name':'parentCollectionId','type':'bytes32'},{'name':'conditionId','type':'bytes32'},{'name':'indexSets','type':'uint256[]'}],'name':'redeemPositions','outputs':[],'type':'function'}]
             ct = w3.eth.contract(address=CT, abi=ct_abi)
 
-            gas_price = int(w3.eth.gas_price * 2)  # 2x for faster confirmation
+            gas_price = int(w3.eth.gas_price * 2)
             nonce = w3.eth.get_transaction_count(addr)
+            redeemed = 0
 
-            tx = ct.functions.redeemPositions(
-                USDC_E,
-                b'\x00' * 32,
-                bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id),
-                [1, 2]
-            ).build_transaction({
-                'from': addr, 'nonce': nonce, 'gas': 200000,
-                'gasPrice': gas_price, 'chainId': 137,
-            })
-            signed = acct.sign_transaction(tx)
-            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            # Fire-and-forget: don't block waiting for receipt
-            print(f"[{_ts()}]   Redeem tx sent: {tx_hash.hex()[:16]}...")
-            log.info("redeem_sent", condition_id=condition_id[:16], tx=tx_hash.hex()[:16])
+            for i, condition_id in enumerate(to_redeem):
+                try:
+                    tx = ct.functions.redeemPositions(
+                        USDC_E,
+                        b'\x00' * 32,
+                        bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id),
+                        [1, 2]
+                    ).build_transaction({
+                        'from': addr, 'nonce': nonce + i, 'gas': 200000,
+                        'gasPrice': gas_price, 'chainId': 137,
+                    })
+                    signed = acct.sign_transaction(tx)
+                    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                    redeemed += 1
+                except Exception as e:
+                    log.warning("redeem_tx_failed", condition_id=condition_id[:16], error=str(e))
+
+            # Clear redeemed, keep any that failed
+            self._pending_redeems.clear()
+            self._last_redeem_time = time.time()
+            print(f"[{_ts()}] Redeemed {redeemed}/{len(to_redeem)} positions (fire-and-forget)")
+            log.info("batch_redeem", count=redeemed, total=len(to_redeem))
+
         except Exception as e:
-            # Queue for retry later — not critical, can always redeem manually
-            if not hasattr(self, '_pending_redeems'):
-                self._pending_redeems = []
-            self._pending_redeems.append(condition_id)
-            print(f"[{_ts()}]   Redeem queued: {e}")
-            log.warning("redeem_queued", condition_id=condition_id[:16], error=str(e))
+            print(f"[{_ts()}] Batch redeem error: {e}")
+            log.warning("batch_redeem_failed", error=str(e))
 
     def _print_status(self, window_start, secs_into):
         if not self.price_feed.has_data:
