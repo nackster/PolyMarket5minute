@@ -627,9 +627,48 @@ class RealTrader:
             print(f"[{_ts()}]   {result_str}  PnL={_eq(pnl)}  "
                   f"Equity={_eq(self.equity)}")
 
+            # Auto-redeem conditional tokens back to USDC.e
+            if self.mode == "live":
+                self._redeem_position(pos.market.condition_id)
+
             self._save_state()
 
         self.open_positions = still_open
+
+    def _redeem_position(self, condition_id: str):
+        """Redeem resolved conditional tokens back to USDC.e on-chain."""
+        try:
+            from web3 import Web3
+            w3 = Web3(Web3.HTTPProvider('https://polygon-bor-rpc.publicnode.com'))
+            acct = w3.eth.account.from_key(self.config.polymarket.private_key)
+            addr = acct.address
+
+            CT = Web3.to_checksum_address('0x4D97DCd97eC945f40cF65F87097ACe5EA0476045')
+            USDC_E = Web3.to_checksum_address('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174')
+
+            ct_abi = [{'inputs':[{'name':'collateralToken','type':'address'},{'name':'parentCollectionId','type':'bytes32'},{'name':'conditionId','type':'bytes32'},{'name':'indexSets','type':'uint256[]'}],'name':'redeemPositions','outputs':[],'type':'function'}]
+            ct = w3.eth.contract(address=CT, abi=ct_abi)
+
+            gas_price = int(w3.eth.gas_price * 1.5)
+            nonce = w3.eth.get_transaction_count(addr)
+
+            tx = ct.functions.redeemPositions(
+                USDC_E,
+                b'\x00' * 32,
+                bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id),
+                [1, 2]
+            ).build_transaction({
+                'from': addr, 'nonce': nonce, 'gas': 200000,
+                'gasPrice': gas_price, 'chainId': 137,
+            })
+            signed = acct.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+            print(f"[{_ts()}]   Redeemed tokens: tx={tx_hash.hex()[:16]}... status={receipt.status}")
+            log.info("tokens_redeemed", condition_id=condition_id[:16], status=receipt.status)
+        except Exception as e:
+            print(f"[{_ts()}]   Redeem note: {e}")
+            log.warning("redeem_failed", condition_id=condition_id[:16], error=str(e))
 
     def _print_status(self, window_start, secs_into):
         if not self.price_feed.has_data:
