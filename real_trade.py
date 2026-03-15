@@ -563,8 +563,14 @@ class RealTrader:
             )
             resp = client.create_and_post_order(order_args)
             print(f"[{_ts()}]   Order response: {resp}")
+            status = resp.get('status', '') if isinstance(resp, dict) else ''
+            success = resp.get('success', False) if isinstance(resp, dict) else False
+            if not success or status not in ('matched', 'live'):
+                print(f"[{_ts()}]   {red(f'ORDER REJECTED: status={status}')}")
+                log.error("order_rejected", status=status, response=resp)
+                return False
             log.info("order_placed", direction=pos.direction, price=price,
-                     size=size, response=resp)
+                     size=size, status=status, response=resp)
             return True
         except Exception as e:
             print(f"[{_ts()}]   {red(f'ORDER FAILED: {e}')}")
@@ -640,19 +646,18 @@ class RealTrader:
 
         self.open_positions = still_open
 
-        # Batch redeem every 10 minutes
-        if (self.mode == "live" and self._pending_redeems
+        # Batch redeem every 10 minutes — scan blockchain, not just pending queue
+        if (self.mode == "live"
                 and time.time() - self._last_redeem_time > self._redeem_interval):
             self._batch_redeem()
 
     def _batch_redeem(self):
-        """Batch redeem all queued conditional tokens back to USDC.e."""
-        to_redeem = list(self._pending_redeems)
-        if not to_redeem:
-            return
-
-        print(f"\n[{_ts()}] Redeeming {len(to_redeem)} positions...")
+        """Scan blockchain for unredeemed conditional tokens and redeem them."""
+        self._last_redeem_time = time.time()
+        self._pending_redeems.clear()
         try:
+            import requests as _requests
+            import json as _json
             from web3 import Web3
             w3 = Web3(Web3.HTTPProvider('https://polygon-bor-rpc.publicnode.com'))
             acct = w3.eth.account.from_key(self.config.polymarket.private_key)
@@ -660,15 +665,48 @@ class RealTrader:
 
             CT = Web3.to_checksum_address('0x4D97DCd97eC945f40cF65F87097ACe5EA0476045')
             USDC_E = Web3.to_checksum_address('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174')
-
-            ct_abi = [{'inputs':[{'name':'collateralToken','type':'address'},{'name':'parentCollectionId','type':'bytes32'},{'name':'conditionId','type':'bytes32'},{'name':'indexSets','type':'uint256[]'}],'name':'redeemPositions','outputs':[],'type':'function'}]
+            ct_abi = [
+                {'inputs':[{'name':'account','type':'address'},{'name':'id','type':'uint256'}],'name':'balanceOf','outputs':[{'name':'','type':'uint256'}],'type':'function'},
+                {'inputs':[{'name':'collateralToken','type':'address'},{'name':'parentCollectionId','type':'bytes32'},{'name':'conditionId','type':'bytes32'},{'name':'indexSets','type':'uint256[]'}],'name':'redeemPositions','outputs':[],'type':'function'}
+            ]
             ct = w3.eth.contract(address=CT, abi=ct_abi)
 
-            gas_price = int(w3.eth.gas_price * 2)
+            # Scan last 24 hours of 5-min markets for unredeemed tokens
+            now = int(time.time())
+            scan_from = now - 86400
+            base_ts = (scan_from // 300) * 300
+            to_redeem = []
+
+            for ts in range(base_ts, now, 300):
+                try:
+                    r = _requests.get(
+                        f'https://gamma-api.polymarket.com/events?slug=btc-updown-5m-{ts}',
+                        timeout=5
+                    )
+                    events = r.json()
+                    if not events:
+                        continue
+                    for m in events[0].get('markets', []):
+                        if not m.get('closed'):
+                            continue
+                        cid = m.get('conditionId', '')
+                        for tid in _json.loads(m.get('clobTokenIds', '[]')):
+                            bal = ct.functions.balanceOf(addr, int(tid)).call()
+                            if bal > 0:
+                                to_redeem.append((ts, cid))
+                                break
+                except Exception:
+                    continue
+
+            if not to_redeem:
+                return
+
+            print(f"\n[{_ts()}] Redeeming {len(to_redeem)} positions...")
+            gas_price = int(w3.eth.gas_price * 1.5)
             nonce = w3.eth.get_transaction_count(addr)
             redeemed = 0
 
-            for i, condition_id in enumerate(to_redeem):
+            for i, (ts, condition_id) in enumerate(to_redeem):
                 try:
                     tx = ct.functions.redeemPositions(
                         USDC_E,
@@ -681,14 +719,16 @@ class RealTrader:
                     })
                     signed = acct.sign_transaction(tx)
                     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-                    redeemed += 1
+                    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                    if receipt.status == 1:
+                        redeemed += 1
+                        log.info("redeem_tx", slug=f"btc-updown-5m-{ts}", tx=tx_hash.hex()[:16])
+                    else:
+                        log.warning("redeem_tx_failed", slug=f"btc-updown-5m-{ts}")
                 except Exception as e:
-                    log.warning("redeem_tx_failed", condition_id=condition_id[:16], error=str(e))
+                    log.warning("redeem_tx_error", slug=f"btc-updown-5m-{ts}", error=str(e))
 
-            # Clear redeemed, keep any that failed
-            self._pending_redeems.clear()
-            self._last_redeem_time = time.time()
-            print(f"[{_ts()}] Redeemed {redeemed}/{len(to_redeem)} positions (fire-and-forget)")
+            print(f"[{_ts()}] Redeemed {redeemed}/{len(to_redeem)} positions")
             log.info("batch_redeem", count=redeemed, total=len(to_redeem))
 
         except Exception as e:
