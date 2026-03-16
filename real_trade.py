@@ -259,7 +259,7 @@ def evaluate_updown(
     MAX_ENTRY = 0.65         # Don't pay too much — loss asymmetry kills us
     MIN_SECS_INTO = 90       # wait 90s into window (more signal, less noise)
     MAX_SECS_INTO = 240      # don't enter in last 60s (not enough time)
-    MIN_MOVE_PCT = 0.0003    # BTC must move at least 0.03% from opening
+    MIN_MOVE_PCT = 0.0015    # BTC must move at least 0.15% — below this oracle and Binance diverge
     SLIPPAGE = 0.02          # Pay up to 2 cents above ask for immediate fill
 
     # Add slippage buffer so order crosses the spread and gets matched immediately
@@ -694,6 +694,7 @@ class RealTrader:
             ct_abi = [
                 {'inputs':[{'name':'account','type':'address'},{'name':'id','type':'uint256'}],'name':'balanceOf','outputs':[{'name':'','type':'uint256'}],'type':'function'},
                 {'inputs':[{'name':'','type':'bytes32'}],'name':'payoutDenominator','outputs':[{'name':'','type':'uint256'}],'type':'function'},
+                {'inputs':[{'name':'','type':'bytes32'},{'name':'','type':'uint256'}],'name':'payoutNumerators','outputs':[{'name':'','type':'uint256'}],'type':'function'},
                 {'inputs':[{'name':'collateralToken','type':'address'},{'name':'parentCollectionId','type':'bytes32'},{'name':'conditionId','type':'bytes32'},{'name':'indexSets','type':'uint256[]'}],'name':'redeemPositions','outputs':[],'type':'function'}
             ]
             ct = w3.eth.contract(address=CT, abi=ct_abi)
@@ -723,18 +724,23 @@ class RealTrader:
                         if not cid:
                             continue
                         token_ids = _json.loads(m.get('clobTokenIds', '[]'))
-                        for tid in token_ids:
+                        for outcome_idx, tid in enumerate(token_ids):
                             bal = ct.functions.balanceOf(addr, int(tid)).call()
                             if bal > 0:
                                 slug = f"btc-updown-5m-{ts}"
-                                # Check on-chain: has the oracle resolved this condition?
                                 cid_bytes = bytes.fromhex(cid[2:] if cid.startswith('0x') else cid)
+                                # Check oracle resolved
                                 payout_denom = ct.functions.payoutDenominator(cid_bytes).call()
                                 if payout_denom == 0:
                                     print(f"[{_ts()}]   Skipping {slug}: oracle not resolved yet (will retry)")
                                 else:
-                                    print(f"[{_ts()}]   Found tokens to redeem: {slug} (bal={bal})")
-                                    to_redeem.append((ts, cid))
+                                    # Check our specific outcome is the winning side
+                                    payout_num = ct.functions.payoutNumerators(cid_bytes, outcome_idx).call()
+                                    if payout_num == 0:
+                                        print(f"[{_ts()}]   Skipping {slug}: our tokens lost (oracle resolved against us)")
+                                    else:
+                                        print(f"[{_ts()}]   Found tokens to redeem: {slug} (bal={bal})")
+                                        to_redeem.append((ts, cid))
                                 break
                 except Exception as e:
                     log.debug("redeem_scan_error", ts=ts, error=str(e))
