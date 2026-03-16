@@ -574,8 +574,16 @@ class RealTrader:
             success = resp.get('success', False) if isinstance(resp, dict) else False
             if not success or status != 'matched':
                 # 'live' = resting limit order, not yet filled — no tokens received
-                # Only track positions on immediate fills ('matched')
-                print(f"[{_ts()}]   {red(f'ORDER NOT FILLED: status={status} — not tracking')}")
+                # Cancel immediately to unlock the USDC collateral
+                order_id = resp.get('orderID', '') if isinstance(resp, dict) else ''
+                if order_id and status == 'live':
+                    try:
+                        client.cancel(order_id)
+                        print(f"[{_ts()}]   {red(f'ORDER NOT FILLED: status=live — cancelled to unlock funds')}")
+                    except Exception as ce:
+                        print(f"[{_ts()}]   {red(f'ORDER NOT FILLED: status=live — cancel failed: {ce}')}")
+                else:
+                    print(f"[{_ts()}]   {red(f'ORDER NOT FILLED: status={status} — not tracking')}")
                 log.warning("order_not_filled", status=status, response=resp)
                 return False
             log.info("order_placed", direction=pos.direction, price=price,
