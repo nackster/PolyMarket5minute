@@ -668,6 +668,7 @@ class RealTrader:
             USDC_E = Web3.to_checksum_address('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174')
             ct_abi = [
                 {'inputs':[{'name':'account','type':'address'},{'name':'id','type':'uint256'}],'name':'balanceOf','outputs':[{'name':'','type':'uint256'}],'type':'function'},
+                {'inputs':[{'name':'','type':'bytes32'}],'name':'payoutDenominator','outputs':[{'name':'','type':'uint256'}],'type':'function'},
                 {'inputs':[{'name':'collateralToken','type':'address'},{'name':'parentCollectionId','type':'bytes32'},{'name':'conditionId','type':'bytes32'},{'name':'indexSets','type':'uint256[]'}],'name':'redeemPositions','outputs':[],'type':'function'}
             ]
             ct = w3.eth.contract(address=CT, abi=ct_abi)
@@ -701,8 +702,14 @@ class RealTrader:
                             bal = ct.functions.balanceOf(addr, int(tid)).call()
                             if bal > 0:
                                 slug = f"btc-updown-5m-{ts}"
-                                print(f"[{_ts()}]   Found tokens to redeem: {slug} (bal={bal})")
-                                to_redeem.append((ts, cid))
+                                # Check on-chain: has the oracle resolved this condition?
+                                cid_bytes = bytes.fromhex(cid[2:] if cid.startswith('0x') else cid)
+                                payout_denom = ct.functions.payoutDenominator(cid_bytes).call()
+                                if payout_denom == 0:
+                                    print(f"[{_ts()}]   Skipping {slug}: oracle not resolved yet (will retry)")
+                                else:
+                                    print(f"[{_ts()}]   Found tokens to redeem: {slug} (bal={bal})")
+                                    to_redeem.append((ts, cid))
                                 break
                 except Exception as e:
                     log.debug("redeem_scan_error", ts=ts, error=str(e))
