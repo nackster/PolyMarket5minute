@@ -256,7 +256,7 @@ def evaluate_updown(
     # ONLY trade the sweet spot.
     MIN_EDGE = 0.03          # 3% minimum edge (covers spread + buffer)
     MIN_ENTRY = 0.35         # Don't buy cheap contrarian bets — they lose
-    MAX_ENTRY = 0.65         # Don't pay too much — loss asymmetry kills us
+    MAX_ENTRY = 0.72         # Don't pay too much — loss asymmetry kills us
     MIN_SECS_INTO = 90       # wait 90s into window (more signal, less noise)
     MAX_SECS_INTO = 240      # don't enter in last 60s (not enough time)
     MIN_MOVE_PCT = 0.0005    # BTC must move at least 0.05% — filters tiny moves where Binance/Chainlink diverge
@@ -559,8 +559,18 @@ class RealTrader:
         """Place a real limit order on Polymarket CLOB. Returns True if successful."""
         token_id = (pos.market.token_id_up if pos.direction == "Up"
                     else pos.market.token_id_down)
-        # Round price to 2 decimal places (Polymarket requirement)
-        price = round(pos.entry_price, 2)
+        # Re-fetch fresh ask price right before placing — avoids stale price from evaluate_entry
+        try:
+            _, fresh_ask, _ = get_best_prices(token_id)
+            if fresh_ask > 0:
+                fresh_price = min(fresh_ask + 0.02, 0.72)
+                if fresh_price != round(pos.entry_price, 2):
+                    print(f"[{_ts()}]   Price refreshed: {pos.entry_price:.2f} → {fresh_price:.2f} (ask={fresh_ask:.2f})")
+                price = round(fresh_price, 2)
+            else:
+                price = round(pos.entry_price, 2)
+        except Exception:
+            price = round(pos.entry_price, 2)
         size = pos.size
 
         print(f"[{_ts()}]   {red(bold('PLACING REAL ORDER'))}: "
