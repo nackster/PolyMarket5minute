@@ -686,6 +686,10 @@ class RealTrader:
                     events = r.json()
                     if not events:
                         continue
+                    # Skip markets whose window ended less than 10 min ago
+                    # Oracle needs time to resolve on-chain after window closes
+                    if now - (ts + 300) < 600:
+                        continue
                     for m in events[0].get('markets', []):
                         if not m.get('closed'):
                             continue
