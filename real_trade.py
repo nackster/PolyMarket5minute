@@ -260,6 +260,11 @@ def evaluate_updown(
     MIN_SECS_INTO = 90       # wait 90s into window (more signal, less noise)
     MAX_SECS_INTO = 240      # don't enter in last 60s (not enough time)
     MIN_MOVE_PCT = 0.0003    # BTC must move at least 0.03% from opening
+    SLIPPAGE = 0.02          # Pay up to 2 cents above ask for immediate fill
+
+    # Add slippage buffer so order crosses the spread and gets matched immediately
+    entry_price = min(entry_price + SLIPPAGE, MAX_ENTRY)
+    edge = edge - SLIPPAGE   # Recalculate edge after slippage
 
     if edge < MIN_EDGE:
         return None
