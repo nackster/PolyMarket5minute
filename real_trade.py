@@ -742,8 +742,10 @@ class RealTrader:
                                     if payout_num == 0:
                                         print(f"[{_ts()}]   Skipping {slug}: our tokens lost (oracle resolved against us)")
                                     else:
-                                        print(f"[{_ts()}]   Found tokens to redeem: {slug} (bal={bal})")
-                                        to_redeem.append((ts, cid))
+                                        # indexSet: outcome 0 → 1 (binary 01), outcome 1 → 2 (binary 10)
+                                        index_set = 1 << outcome_idx
+                                        print(f"[{_ts()}]   Found tokens to redeem: {slug} (bal={bal}, outcome_idx={outcome_idx}, indexSet={index_set}, payout_denom={payout_denom}, payout_num={payout_num})")
+                                        to_redeem.append((ts, cid, index_set))
                                 break
                 except Exception as e:
                     log.debug("redeem_scan_error", ts=ts, error=str(e))
@@ -765,13 +767,13 @@ class RealTrader:
             nonce = w3.eth.get_transaction_count(addr)
             redeemed = 0
 
-            for i, (ts, condition_id) in enumerate(to_redeem):
+            for i, (ts, condition_id, index_set) in enumerate(to_redeem):
                 try:
                     tx = ct.functions.redeemPositions(
                         USDC_E,
                         b'\x00' * 32,
                         bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id),
-                        [1, 2]
+                        [index_set]
                     ).build_transaction({
                         'from': addr, 'nonce': nonce + i, 'gas': 200000,
                         'gasPrice': gas_price, 'chainId': 137,
