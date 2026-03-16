@@ -567,7 +567,7 @@ class RealTrader:
               f"BUY {pos.direction} @ {price:.2f} x ${size:.2f}")
 
         try:
-            from py_clob_client.clob_types import OrderArgs
+            from py_clob_client.clob_types import OrderArgs, OrderType
 
             client = self._get_clob_client()
             order_args = OrderArgs(
@@ -576,7 +576,10 @@ class RealTrader:
                 size=size,
                 side="BUY",
             )
-            resp = client.create_and_post_order(order_args)
+            # Use FOK (Fill or Kill) — if not immediately matched, auto-cancels
+            # create_and_post_order ignores order_type, so split the calls manually
+            signed_order = client.create_order(order_args)
+            resp = client.post_order(signed_order, orderType=OrderType.FOK)
             print(f"[{_ts()}]   Order response: {resp}")
             status = resp.get('status', '') if isinstance(resp, dict) else ''
             success = resp.get('success', False) if isinstance(resp, dict) else False
