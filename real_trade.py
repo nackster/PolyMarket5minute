@@ -491,6 +491,10 @@ class RealTrader:
         if not getattr(self, '_clob_client', None):
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            # Patch shared httpx client with 5s timeout to prevent indefinite hangs
+            import httpx
+            import py_clob_client.http_helpers.helpers as _clob_http
+            _clob_http._http_client = httpx.Client(http2=True, timeout=5.0)
 
             proxy_addr = self.config.polymarket.proxy_address
 
