@@ -597,9 +597,11 @@ class RealTrader:
             print(f"[{_ts()}]   Order response: {resp}")
             status = resp.get('status', '') if isinstance(resp, dict) else ''
             success = resp.get('success', False) if isinstance(resp, dict) else False
-            if not success or status not in ('matched', 'live'):
-                print(f"[{_ts()}]   {red(f'ORDER REJECTED: status={status}')}")
-                log.error("order_rejected", status=status, response=resp)
+            if not success or status != 'matched':
+                # 'live' = resting limit order, not yet filled — no tokens received
+                # Only track positions on immediate fills ('matched')
+                print(f"[{_ts()}]   {red(f'ORDER NOT FILLED: status={status} — not tracking')}")
+                log.warning("order_not_filled", status=status, response=resp)
                 return False
             log.info("order_placed", direction=pos.direction, price=price,
                      size=size, status=status, response=resp)
