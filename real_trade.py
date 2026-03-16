@@ -347,7 +347,7 @@ class RealTrader:
                     {'name':'answeredInRound','type':'uint80'}
                 ],'type':'function'}]
                 # Chainlink BTC/USD feed on Polygon Mainnet
-                addr = Web3.to_checksum_address('0xc907E116054Ad103354f2D350FD2514433D57F6e')
+                addr = Web3.to_checksum_address('0xDE31F8bFBD8c84b5360CFACCa3539B938F4e0AF4')
                 self._chainlink_contract = w3.eth.contract(address=addr, abi=abi)
             _, answer, _, updated_at, _ = self._chainlink_contract.functions.latestRoundData().call()
             price = answer / 1e8
@@ -357,6 +357,7 @@ class RealTrader:
             return price
         except Exception as e:
             log.warning("chainlink_failed", error=str(e))
+            self._chainlink_contract = None  # reset so next call retries
             return None
 
     async def run(self):
