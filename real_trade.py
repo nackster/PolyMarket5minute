@@ -701,7 +701,14 @@ class RealTrader:
             if not to_redeem:
                 return
 
+            # Check wallet balance before redeeming
+            usdc_abi = [{'inputs':[{'name':'account','type':'address'}],'name':'balanceOf','outputs':[{'name':'','type':'uint256'}],'type':'function'}]
+            usdc = w3.eth.contract(address=USDC_E, abi=usdc_abi)
+            bal_before = usdc.functions.balanceOf(addr).call() / 1e6
             print(f"\n[{_ts()}] Redeeming {len(to_redeem)} positions...")
+            print(f"[{_ts()}] Wallet BEFORE redeem: ${bal_before:.2f} USDC.e")
+            log.info("wallet_before_redeem", balance_usd=round(bal_before, 2))
+
             gas_price = int(w3.eth.gas_price * 1.5)
             nonce = w3.eth.get_transaction_count(addr)
             redeemed = 0
@@ -728,8 +735,13 @@ class RealTrader:
                 except Exception as e:
                     log.warning("redeem_tx_error", slug=f"btc-updown-5m-{ts}", error=str(e))
 
+            bal_after = usdc.functions.balanceOf(addr).call() / 1e6
+            gained = bal_after - bal_before
             print(f"[{_ts()}] Redeemed {redeemed}/{len(to_redeem)} positions")
-            log.info("batch_redeem", count=redeemed, total=len(to_redeem))
+            print(f"[{_ts()}] Wallet AFTER redeem:  ${bal_after:.2f} USDC.e  (received +${gained:.2f})")
+            log.info("batch_redeem", count=redeemed, total=len(to_redeem),
+                     wallet_before=round(bal_before, 2), wallet_after=round(bal_after, 2),
+                     gained=round(gained, 2))
 
         except Exception as e:
             print(f"[{_ts()}] Batch redeem error: {e}")
