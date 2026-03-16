@@ -320,6 +320,7 @@ class RealTrader:
         self._window_opens: dict[int, float] = {}  # window_start -> btc_price
         self._window_markets: dict[int, MarketInfo] = {}
         self._traded_windows: set[int] = set()  # windows we've already traded
+        self._window_attempts: dict[int, int] = {}  # failed attempts per window
 
         # Redemption queue — batch redeem every 10 minutes
         self._pending_redeems: list[str] = []  # condition_ids to redeem
@@ -395,9 +396,10 @@ class RealTrader:
                     print(f"\n[{_ts()}] Window started: {datetime.fromtimestamp(current_window).strftime('%H:%M:%S')}"
                           f"  Opening BTC=${self._window_opens[current_window]:,.2f}")
 
-                # Check for entry opportunity in current window
+                # Check for entry opportunity in current window (max 2 failed attempts)
                 if (current_window not in self._traded_windows
                         and current_window in self._window_opens
+                        and self._window_attempts.get(current_window, 0) < 2
                         and self.price_feed.has_data):
                     await self._check_entry(current_window, secs_into)
 
@@ -471,9 +473,15 @@ class RealTrader:
         # In live mode, place real order — only track position if order succeeds
         if self.mode == "live":
             if not self._place_order(pos):
-                # Order failed — don't track this position
+                # Order failed — don't track, count the attempt
                 self._traded_windows.discard(pos.market.window_start)
-                print(f"[{_ts()}]   Order failed — position NOT tracked, window reopened")
+                attempts = self._window_attempts.get(pos.market.window_start, 0) + 1
+                self._window_attempts[pos.market.window_start] = attempts
+                remaining = 2 - attempts
+                if remaining > 0:
+                    print(f"[{_ts()}]   Order failed — not tracked, will retry ({remaining} attempt(s) left)")
+                else:
+                    print(f"[{_ts()}]   Order failed — max retries reached, skipping window")
                 return
 
         self.open_positions.append(pos)
