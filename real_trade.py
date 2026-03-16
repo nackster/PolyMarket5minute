@@ -655,7 +655,7 @@ class RealTrader:
         """Scan blockchain for unredeemed conditional tokens and redeem them."""
         self._last_redeem_time = time.time()
         self._pending_redeems.clear()
-        print(f"\n[{_ts()}] Running batch redeem scan (checking last 24h of markets)...")
+        print(f"\n[{_ts()}] Running batch redeem scan (last 4h of markets)...")
         try:
             import requests as _requests
             import json as _json
@@ -672,13 +672,17 @@ class RealTrader:
             ]
             ct = w3.eth.contract(address=CT, abi=ct_abi)
 
-            # Scan last 24 hours of 5-min markets for unredeemed tokens
+            # Scan last 4 hours of 5-min markets (48 markets, not 288)
             now = int(time.time())
-            scan_from = now - 86400
+            scan_from = now - 4 * 3600
             base_ts = (scan_from // 300) * 300
             to_redeem = []
+            markets_checked = 0
 
             for ts in range(base_ts, now, 300):
+                # Skip if window ended less than 10 min ago (oracle delay)
+                if now - (ts + 300) < 600:
+                    continue
                 try:
                     r = _requests.get(
                         f'https://gamma-api.polymarket.com/events?slug=btc-updown-5m-{ts}',
@@ -687,24 +691,25 @@ class RealTrader:
                     events = r.json()
                     if not events:
                         continue
-                    # Skip markets whose window ended less than 10 min ago
-                    # Oracle needs time to resolve on-chain after window closes
-                    if now - (ts + 300) < 600:
-                        continue
+                    markets_checked += 1
                     for m in events[0].get('markets', []):
-                        if not m.get('closed'):
-                            continue
                         cid = m.get('conditionId', '')
-                        for tid in _json.loads(m.get('clobTokenIds', '[]')):
+                        if not cid:
+                            continue
+                        token_ids = _json.loads(m.get('clobTokenIds', '[]'))
+                        for tid in token_ids:
                             bal = ct.functions.balanceOf(addr, int(tid)).call()
                             if bal > 0:
+                                slug = f"btc-updown-5m-{ts}"
+                                print(f"[{_ts()}]   Found tokens to redeem: {slug} (bal={bal})")
                                 to_redeem.append((ts, cid))
                                 break
-                except Exception:
+                except Exception as e:
+                    log.debug("redeem_scan_error", ts=ts, error=str(e))
                     continue
 
+            print(f"[{_ts()}] Scan done: {markets_checked} markets checked, {len(to_redeem)} to redeem")
             if not to_redeem:
-                print(f"[{_ts()}] Batch redeem scan complete — no tokens to redeem")
                 return
 
             # Check wallet balance before redeeming
