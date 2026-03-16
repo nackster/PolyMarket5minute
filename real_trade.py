@@ -655,6 +655,7 @@ class RealTrader:
         """Scan blockchain for unredeemed conditional tokens and redeem them."""
         self._last_redeem_time = time.time()
         self._pending_redeems.clear()
+        print(f"\n[{_ts()}] Running batch redeem scan (checking last 24h of markets)...")
         try:
             import requests as _requests
             import json as _json
@@ -703,6 +704,7 @@ class RealTrader:
                     continue
 
             if not to_redeem:
+                print(f"[{_ts()}] Batch redeem scan complete — no tokens to redeem")
                 return
 
             # Check wallet balance before redeeming
