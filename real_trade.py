@@ -259,7 +259,7 @@ def evaluate_updown(
     MAX_ENTRY = 0.65         # Don't pay too much — loss asymmetry kills us
     MIN_SECS_INTO = 90       # wait 90s into window (more signal, less noise)
     MAX_SECS_INTO = 240      # don't enter in last 60s (not enough time)
-    MIN_MOVE_PCT = 0.0015    # BTC must move at least 0.15% — below this oracle and Binance diverge
+    MIN_MOVE_PCT = 0.0005    # BTC must move at least 0.05% — filters tiny moves where Binance/Chainlink diverge
     SLIPPAGE = 0.02          # Pay up to 2 cents above ask for immediate fill
 
     # Add slippage buffer so order crosses the spread and gets matched immediately
