@@ -321,8 +321,38 @@ class RealTrader:
         self._last_redeem_time: float = 0.0
         self._redeem_interval: float = 600.0  # 10 minutes
 
+        # Chainlink oracle (lazy-initialized)
+        self._chainlink_contract = None
+
     def _request_shutdown(self):
         self._shutdown = True
+
+    def _chainlink_price(self) -> float | None:
+        """Read current BTC/USD price from Chainlink oracle on Polygon.
+        Same price source Polymarket uses for resolution. Falls back to None on error."""
+        try:
+            from web3 import Web3
+            if self._chainlink_contract is None:
+                w3 = Web3(Web3.HTTPProvider('https://polygon-bor-rpc.publicnode.com'))
+                abi = [{'inputs':[],'name':'latestRoundData','outputs':[
+                    {'name':'roundId','type':'uint80'},
+                    {'name':'answer','type':'int256'},
+                    {'name':'startedAt','type':'uint256'},
+                    {'name':'updatedAt','type':'uint256'},
+                    {'name':'answeredInRound','type':'uint80'}
+                ],'type':'function'}]
+                # Chainlink BTC/USD feed on Polygon Mainnet
+                addr = Web3.to_checksum_address('0xc907E116054Ad103354f2D350FD2514433D57F6e')
+                self._chainlink_contract = w3.eth.contract(address=addr, abi=abi)
+            _, answer, _, updated_at, _ = self._chainlink_contract.functions.latestRoundData().call()
+            price = answer / 1e8
+            age_secs = time.time() - updated_at
+            if age_secs > 300:
+                log.warning("chainlink_stale", age_secs=round(age_secs), price=price)
+            return price
+        except Exception as e:
+            log.warning("chainlink_failed", error=str(e))
+            return None
 
     async def run(self):
         mode_str = red(bold("LIVE MONEY")) if self.mode == "live" else green("PAPER")
@@ -379,14 +409,16 @@ class RealTrader:
                 current_window = (now_ts // 300) * 300
                 secs_into = now - current_window
 
-                # Record opening price at window start
+                # Record opening price at window start (Chainlink, fallback to Binance)
                 if current_window not in self._window_opens and self.price_feed.has_data:
-                    self._window_opens[current_window] = self.price_feed.current_price
+                    cl_price = self._chainlink_price()
+                    self._window_opens[current_window] = cl_price if cl_price else self.price_feed.current_price
                     self._prefetch_market(current_window)
                     # Also prefetch next window
                     self._prefetch_market(current_window + 300)
+                    src = "Chainlink" if cl_price else "Binance"
                     print(f"\n[{_ts()}] Window started: {datetime.fromtimestamp(current_window).strftime('%H:%M:%S')}"
-                          f"  Opening BTC=${self._window_opens[current_window]:,.2f}")
+                          f"  Opening BTC=${self._window_opens[current_window]:,.2f} ({src})")
 
                 # Check for entry opportunity in current window
                 if (current_window not in self._traded_windows
@@ -589,7 +621,9 @@ class RealTrader:
                 still_open.append(pos)
                 continue
 
-            btc_close = self.price_feed.current_price
+            cl_close = self._chainlink_price()
+            btc_close = cl_close if cl_close else self.price_feed.current_price
+            close_src = "Chainlink" if cl_close else "Binance"
             btc_open = pos.market.opening_price
 
             # Resolution: Up wins if close >= open
@@ -633,7 +667,7 @@ class RealTrader:
             move = (btc_close - btc_open) / btc_open * 100
             print(f"\n[{_ts()}] {'-'*58}")
             print(f"[{_ts()}] RESOLVED: {pos.direction}  Result={actual_result}  "
-                  f"BTC move={move:+.3f}%")
+                  f"BTC move={move:+.3f}% (close via {close_src})")
             print(f"[{_ts()}]   Open=${btc_open:,.2f} -> Close=${btc_close:,.2f}")
             print(f"[{_ts()}]   {result_str}  PnL={_eq(pnl)}  "
                   f"Equity={_eq(self.equity)}")
