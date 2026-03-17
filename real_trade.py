@@ -567,26 +567,25 @@ class RealTrader:
         MAX_PRICE = 0.72  # reject if market price exceeds this
 
         try:
-            from py_clob_client.clob_types import MarketOrderArgs, OrderType
+            from py_clob_client.clob_types import OrderArgs, OrderType
 
             client = self._get_clob_client()
 
-            # Let CLOB calculate live market price from order book at placement time
-            live_price = client.calculate_market_price(token_id, "BUY", size, None)
-            if live_price <= 0 or live_price > MAX_PRICE:
-                print(f"[{_ts()}]   Market price {live_price:.2f} outside range (max={MAX_PRICE}) — skipping")
+            # Fetch fresh ask price at placement time — 4-cent buffer to cross spread with FOK
+            _, fresh_ask, _ = get_best_prices(token_id)
+            if fresh_ask <= 0:
+                print(f"[{_ts()}]   Could not fetch order book — skipping")
+                return False
+            price = round(min(fresh_ask + 0.04, MAX_PRICE), 2)
+            if price >= MAX_PRICE:
+                print(f"[{_ts()}]   Ask too high: {fresh_ask:.2f} — skipping")
                 return False
 
             print(f"[{_ts()}]   {red(bold('PLACING REAL ORDER'))}: "
-                  f"BUY {pos.direction} @ {live_price:.2f} (market) x ${size:.2f}")
+                  f"BUY {pos.direction} @ {price:.2f} (ask={fresh_ask:.2f}+4c) x ${size:.2f}")
 
-            market_order_args = MarketOrderArgs(
-                token_id=token_id,
-                amount=size,
-                side="BUY",
-                price=live_price,
-            )
-            signed_order = client.create_market_order(market_order_args)
+            order_args = OrderArgs(token_id=token_id, price=price, size=size, side="BUY")
+            signed_order = client.create_order(order_args)
             resp = client.post_order(signed_order, orderType=OrderType.FOK)
             print(f"[{_ts()}]   Order response: {resp}")
             status = resp.get('status', '') if isinstance(resp, dict) else ''
