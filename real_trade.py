@@ -560,39 +560,33 @@ class RealTrader:
         return self._clob_client
 
     def _place_order(self, pos: OpenPos) -> bool:
-        """Place a real limit order on Polymarket CLOB. Returns True if successful."""
+        """Place a market order on Polymarket CLOB. Returns True if successful."""
         token_id = (pos.market.token_id_up if pos.direction == "Up"
                     else pos.market.token_id_down)
-        # Re-fetch fresh ask price right before placing — avoids stale price from evaluate_entry
-        try:
-            _, fresh_ask, _ = get_best_prices(token_id)
-            if fresh_ask > 0:
-                fresh_price = min(fresh_ask + 0.02, 0.72)
-                if fresh_price != round(pos.entry_price, 2):
-                    print(f"[{_ts()}]   Price refreshed: {pos.entry_price:.2f} → {fresh_price:.2f} (ask={fresh_ask:.2f})")
-                price = round(fresh_price, 2)
-            else:
-                price = round(pos.entry_price, 2)
-        except Exception:
-            price = round(pos.entry_price, 2)
         size = pos.size
-
-        print(f"[{_ts()}]   {red(bold('PLACING REAL ORDER'))}: "
-              f"BUY {pos.direction} @ {price:.2f} x ${size:.2f}")
+        MAX_PRICE = 0.72  # reject if market price exceeds this
 
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType
+            from py_clob_client.clob_types import MarketOrderArgs, OrderType
 
             client = self._get_clob_client()
-            order_args = OrderArgs(
+
+            # Let CLOB calculate live market price from order book at placement time
+            live_price = client.calculate_market_price(token_id, "BUY", size, None)
+            if live_price <= 0 or live_price > MAX_PRICE:
+                print(f"[{_ts()}]   Market price {live_price:.2f} outside range (max={MAX_PRICE}) — skipping")
+                return False
+
+            print(f"[{_ts()}]   {red(bold('PLACING REAL ORDER'))}: "
+                  f"BUY {pos.direction} @ {live_price:.2f} (market) x ${size:.2f}")
+
+            market_order_args = MarketOrderArgs(
                 token_id=token_id,
-                price=price,
-                size=size,
+                amount=size,
                 side="BUY",
+                price=live_price,
             )
-            # Use FOK (Fill or Kill) — if not immediately matched, auto-cancels
-            # create_and_post_order ignores order_type, so split the calls manually
-            signed_order = client.create_order(order_args)
+            signed_order = client.create_market_order(market_order_args)
             resp = client.post_order(signed_order, orderType=OrderType.FOK)
             print(f"[{_ts()}]   Order response: {resp}")
             status = resp.get('status', '') if isinstance(resp, dict) else ''
