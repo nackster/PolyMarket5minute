@@ -23,6 +23,15 @@ services:
       - tradedata:/app/trades
     command: python real_trade_hourly.py --mode paper --size 50
 
+  # ── Hyperliquid futures bot (paper) ─────────────────────────────────
+  hl-trader:
+    build: .
+    restart: always
+    env_file: .env
+    volumes:
+      - tradedata:/app/trades
+    command: python hyperliquid_trader.py --mode paper --size 50
+
   # ── Hourly $5 live test ─────────────────────────────────────────────
   hourly-live-test:
     build: .
