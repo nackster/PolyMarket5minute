@@ -256,7 +256,7 @@ def evaluate_updown(
     # ONLY trade the sweet spot.
     MIN_EDGE = 0.03          # 3% minimum edge (covers spread + buffer)
     MIN_ENTRY = 0.35         # Don't buy cheap contrarian bets — they lose
-    MAX_ENTRY = 0.72         # Don't pay too much — loss asymmetry kills us
+    MAX_ENTRY = 0.62         # Cap at 0.62 — orders at 0.65 consistently go live due to market moving faster than we can place
     MIN_SECS_INTO = 90       # wait 90s into window (more signal, less noise)
     MAX_SECS_INTO = 240      # don't enter in last 60s (not enough time)
     MIN_MOVE_PCT = 0.0005    # BTC must move at least 0.05% — filters tiny moves where Binance/Chainlink diverge
