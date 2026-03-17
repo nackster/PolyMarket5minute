@@ -563,9 +563,8 @@ class HyperliquidTrader:
         )
         self.completed_trades.append(trade)
 
-        if self._use_db:
-            save_trade(trade)
-            update_bot_state(self.equity, self.peak_equity, self.max_drawdown, self.mode)
+        # DB schema is Polymarket-specific; HL trades persist to JSON only
+        self._save_state()
 
         result_str = green(f"+${pnl_usd:.2f}") if pnl_usd >= 0 else red(f"-${abs(pnl_usd):.2f}")
         move = (exit_price - pos.entry_price) / pos.entry_price * 100
