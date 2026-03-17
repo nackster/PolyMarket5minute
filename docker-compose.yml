@@ -23,6 +23,15 @@ services:
       - tradedata:/app/trades
     command: python real_trade_hourly.py --mode paper --size 50
 
+  # ── Hourly $5 live test ─────────────────────────────────────────────
+  hourly-live-test:
+    build: .
+    restart: "no"
+    env_file: .env
+    volumes:
+      - tradedata:/app/trades
+    command: python real_trade_hourly.py --mode live --size 5
+
   # ── Web dashboard ───────────────────────────────────────────────────────
   web:
     build: .
