@@ -30,7 +30,7 @@ services:
     env_file: .env
     volumes:
       - tradedata:/app/trades
-    command: python hyperliquid_trader.py --mode paper --size 50
+    command: python hyperliquid_trader.py --mode paper --size 1000 --leverage 5
 
   # ── Hourly $5 live test ─────────────────────────────────────────────
   hourly-live-test:

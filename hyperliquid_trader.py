@@ -249,11 +249,12 @@ class HLClient:
 # ── Trader ───────────────────────────────────────────────────────────────────
 
 class HyperliquidTrader:
-    def __init__(self, config, mode="paper", trade_size_usd=50.0, check_interval=30):
+    def __init__(self, config, mode="paper", trade_size_usd=50.0, check_interval=30, leverage=LEVERAGE):
         self.config         = config
         self.mode           = mode
         self.trade_size_usd = trade_size_usd  # margin per trade
         self.check_interval = check_interval
+        self._leverage      = leverage
         self._shutdown      = False
 
         self.price_feed = PriceFeed(config.binance, max_history_secs=7200)
@@ -285,20 +286,20 @@ class HyperliquidTrader:
                     "HYPERLIQUID_API_KEY and HYPERLIQUID_WALLET_ADDRESS required for live mode"
                 )
             self._hl = HLClient(api_key, wallet_address)
-            self._hl.set_leverage(LEVERAGE, SYMBOL)
+            self._hl.set_leverage(self._leverage, SYMBOL)
             bal = self._hl.get_balance()
             print(f"[{_ts()}]   Hyperliquid balance: ${bal:.2f} USDC")
         return self._hl
 
     async def run(self):
         mode_str = red(bold("LIVE MONEY")) if self.mode == "live" else green("PAPER")
-        notional = self.trade_size_usd * LEVERAGE
+        notional = self.trade_size_usd * self._leverage
         print(bold("\n" + "=" * 65))
         print(bold(f"  HYPERLIQUID FUTURES BOT  [{mode_str}{BOLD}]"))
         print(bold(f"  BTC-PERP momentum strategy"))
         print(bold("=" * 65))
         print(f"  Mode: {self.mode.upper()}  |  Margin: ${self.trade_size_usd}  |  "
-              f"Notional: ${notional:.0f} ({LEVERAGE}x)")
+              f"Notional: ${notional:.0f} ({self._leverage}x)")
         print(f"  Entry window: {MIN_SECS_INTO}-{MAX_SECS_INTO}s into each UTC hour")
         print(f"  Min BTC move: {MIN_MOVE_PCT*100:.1f}%")
         print(f"  Stop loss: {STOP_LOSS_PCT*100:.1f}%  |  Trail: {TRAIL_DISTANCE_PCT*100:.1f}%  |  "
@@ -383,7 +384,7 @@ class HyperliquidTrader:
         self._traded_windows.add(window_start)
 
         is_long      = direction == "Long"
-        notional_usd = self.trade_size_usd * LEVERAGE
+        notional_usd = self.trade_size_usd * self._leverage
         sz_btc       = round(notional_usd / btc_now, 4)
 
         colour = green if is_long else red
@@ -558,7 +559,7 @@ class HyperliquidTrader:
             pnl_usd=pnl_usd,
             exit_reason=reason,
             mode=self.mode,
-            leverage=LEVERAGE,
+            leverage=self._leverage,
             move_pct=pos.move_pct,
         )
         self.completed_trades.append(trade)
@@ -630,7 +631,7 @@ class HyperliquidTrader:
         print(bold("=" * 65))
         print(bold(f"  HYPERLIQUID TRADING SUMMARY  [{self.mode.upper()}]"))
         print(bold("=" * 65))
-        print(f"  Symbol:    BTC-PERP  |  Leverage: {LEVERAGE}x")
+        print(f"  Symbol:    BTC-PERP  |  Leverage: {self._leverage}x")
         print(f"  Total trades: {n}")
         if n == 0:
             print(bold("=" * 65))
@@ -660,11 +661,13 @@ class HyperliquidTrader:
 def main():
     p = argparse.ArgumentParser(description="Hyperliquid BTC futures momentum bot")
     p.add_argument("--mode",   choices=["paper", "live"], default="paper")
-    p.add_argument("--size",   type=float, default=50.0,
+    p.add_argument("--size",     type=float, default=50.0,
                    help="Margin per trade in USD (notional = size * leverage)")
-    p.add_argument("--check",  type=int,   default=30,
+    p.add_argument("--leverage", type=int,   default=LEVERAGE,
+                   help="Leverage multiplier (default 3)")
+    p.add_argument("--check",    type=int,   default=30,
                    help="Check interval in seconds (default 30)")
-    p.add_argument("--symbol", default=SYMBOL, help="Coin to trade (default BTC)")
+    p.add_argument("--symbol",   default=SYMBOL, help="Coin to trade (default BTC)")
     args = p.parse_args()
 
     import logging
@@ -679,9 +682,9 @@ def main():
         if not os.getenv("HYPERLIQUID_WALLET_ADDRESS"):
             print("ERROR: HYPERLIQUID_WALLET_ADDRESS not set in .env")
             sys.exit(1)
-        notional = args.size * LEVERAGE
+        notional = args.size * args.leverage
         print(bold(red("\n  *** LIVE MONEY MODE — HYPERLIQUID ***")))
-        print(bold(red(f"  Margin: ${args.size}  |  Notional: ${notional:.0f}  |  Leverage: {LEVERAGE}x")))
+        print(bold(red(f"  Margin: ${args.size}  |  Notional: ${notional:.0f}  |  Leverage: {args.leverage}x")))
         print(bold(red("  Real orders will be placed on Hyperliquid!\n")))
 
     trader = HyperliquidTrader(
@@ -689,6 +692,7 @@ def main():
         mode=args.mode,
         trade_size_usd=args.size,
         check_interval=args.check,
+        leverage=args.leverage,
     )
 
     try:
