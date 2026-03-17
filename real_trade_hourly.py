@@ -10,10 +10,10 @@ Market structure:
   - AMM + CLOB liquidity: $10k-$1M per market (vs $142k for 5-min)
 
 Edge:
-  - Enter at 5-10 minutes into the hour when BTC has moved 0.2%+
+  - Enter at 1-5 minutes into the hour when BTC has moved 0.2%+
+  - Early entry catches market before AMM reprices (~0.50 at open, moves fast)
   - Backtest: 5-min entry, 0.2% move -> 80% WR; 0.3% move -> 89% WR
   - Much deeper liquidity than 5-min markets = reliable fills
-  - AMM price starts near 0.50, adjusts slowly -> early entry gets best price
 
 Usage:
     python real_trade_hourly.py                      # paper mode (default)
@@ -244,8 +244,8 @@ def get_market_prices(market: MarketInfo) -> tuple[float, float]:
 #   5-min entry, 0.3% move -> 89% WR (65 trades/month, ~2/day)
 # We use 0.2% for more frequency, accept 80% WR at <0.60 entry price
 
-MIN_SECS_INTO  = 300    # enter at 5+ minutes into the hour
-MAX_SECS_INTO  = 720    # don't enter after 12 minutes (price will have moved a lot)
+MIN_SECS_INTO  = 60     # enter at 1+ minutes into the hour
+MAX_SECS_INTO  = 300    # don't enter after 5 minutes (before market reprices)
 MIN_MOVE_PCT   = 0.002  # 0.2% minimum BTC move from hourly open
 MAX_ENTRY      = 0.70   # cap entry — above 0.70 the payoff asymmetry hurts
 MIN_ENTRY      = 0.40   # don't buy cheap contrarian tokens
@@ -297,8 +297,12 @@ def evaluate_hourly(
         ask = price_down
         prob_win = 1.0 - prob
 
+    # Bail early if market has already repriced above our cap
+    if ask >= MAX_ENTRY:
+        return None
+
     entry_price = min(ask + SLIPPAGE, MAX_ENTRY)
-    edge = prob_win - entry_price
+    edge = prob_win - ask  # edge vs actual market price, not vs our limit
 
     if entry_price < MIN_ENTRY or entry_price > MAX_ENTRY:
         return None
