@@ -24,11 +24,13 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import math
 import os
 import signal
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, asdict
@@ -555,7 +557,11 @@ class HyperliquidTrader:
         signal.signal(signal.SIGINT,  lambda *_: setattr(self, "_shutdown", True))
 
         self._load_state()
-        self.price_feed.start()
+        # PriceFeed.start() is an async coroutine — run it in a background thread
+        threading.Thread(
+            target=lambda: asyncio.run(self.price_feed.start()),
+            daemon=True,
+        ).start()
         time.sleep(3)   # let BTC price feed warm up
 
         print(f"[{_ts()}] Warming up Z-score ({ZSCORE_PERIOD} samples needed)...")
