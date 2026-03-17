@@ -301,7 +301,12 @@ class HyperliquidTrader:
             self.peak_equity  = data.get("peak_equity", 0.0)
             self.max_drawdown = data.get("max_drawdown", 0.0)
             for t in data.get("trades", []):
-                self.completed_trades.append(Trade(**t))
+                # Drop unknown fields from old schema versions
+                valid = {k: v for k, v in t.items() if k in Trade.__dataclass_fields__}
+                try:
+                    self.completed_trades.append(Trade(**valid))
+                except Exception:
+                    pass
             op = data.get("open_position")
             if op:
                 self.open_position = OpenPos(**op)
@@ -558,7 +563,7 @@ class HyperliquidTrader:
         last_eth_fetch = 0
 
         while not self._shutdown:
-            btc = self.price_feed.current_price()
+            btc = self.price_feed.current_price
             if not btc:
                 time.sleep(5)
                 continue
@@ -602,7 +607,7 @@ class HyperliquidTrader:
         # Graceful shutdown
         print(f"\n[{_ts()}] Shutting down...")
         if self.open_position and self.mode == "live" and self._hl:
-            btc = self.price_feed.current_price() or 0
+            btc = self.price_feed.current_price or 0
             self._close(btc, "shutdown")
         self._print_stats()
         self._save_state()
