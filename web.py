@@ -1,9 +1,11 @@
-"""Flask web dashboard for monitoring trades.
+"""Combined web dashboard for both 5-min and hourly BTC trading bots.
 
-Provides a simple web UI to check bot status, trade history, and stats.
-Runs as the 'web' dyno on Heroku.
+Shows real-time trade history and stats for:
+  - 5-Min Bot (LIVE) — btc-updown-5m markets
+  - Hourly Bot (PAPER) — bitcoin-up-or-down hourly markets
 """
 
+import json
 import os
 from datetime import datetime
 
@@ -13,205 +15,454 @@ from db import get_bot_state, get_trades, get_stats
 
 app = Flask(__name__)
 
-DASHBOARD_HTML = """
-<!DOCTYPE html>
+TRADES_FILE_5M     = "trades/real_trades.json"
+TRADES_FILE_HOURLY = "trades/real_trades_hourly.json"
+
+
+# ── Data helpers ─────────────────────────────────────────────────────────────
+
+def load_json_trades(path: str) -> dict:
+    """Load trades from a JSON file. Returns empty state if not found."""
+    if not os.path.exists(path):
+        return {"equity": 0.0, "mode": "paper", "updated_at": None, "trades": []}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {"equity": 0.0, "mode": "paper", "updated_at": None, "trades": []}
+
+
+def compute_stats(trades: list) -> dict:
+    """Compute summary stats from a list of trade dicts."""
+    if not trades:
+        return {"total": 0, "wins": 0, "losses": 0, "win_rate": 0,
+                "total_pnl": 0, "avg_pnl": 0, "best_trade": 0, "worst_trade": 0}
+    n     = len(trades)
+    wins  = sum(1 for t in trades if t.get("won"))
+    pnl   = sum(t.get("pnl", 0) for t in trades)
+    pnls  = [t.get("pnl", 0) for t in trades]
+    return {
+        "total":       n,
+        "wins":        wins,
+        "losses":      n - wins,
+        "win_rate":    wins / n,
+        "total_pnl":   pnl,
+        "avg_pnl":     pnl / n,
+        "best_trade":  max(pnls),
+        "worst_trade": min(pnls),
+    }
+
+
+def get_5m_data():
+    """Get 5-min bot data: prefer DB, fall back to JSON."""
+    db_state  = get_bot_state()
+    db_trades = get_trades(limit=50)
+    db_stats  = get_stats()
+
+    if db_trades:
+        return db_state or {}, db_stats or {}, db_trades
+
+    # Fallback to JSON
+    state = load_json_trades(TRADES_FILE_5M)
+    trades = list(reversed(state["trades"]))[:50]
+    stats  = compute_stats(state["trades"])
+    return state, stats, trades
+
+
+def get_hourly_data():
+    """Get hourly bot data from JSON file."""
+    state  = load_json_trades(TRADES_FILE_HOURLY)
+    trades = list(reversed(state["trades"]))[:50]
+    stats  = compute_stats(state["trades"])
+    return state, stats, trades
+
+
+def fmt_time(ts):
+    if not ts:
+        return "—"
+    try:
+        return datetime.utcfromtimestamp(float(ts)).strftime("%m-%d %H:%M")
+    except Exception:
+        return "—"
+
+
+def fmt_move(t: dict) -> str:
+    try:
+        o, c = float(t["btc_at_open"]), float(t["btc_at_close"])
+        if o > 0:
+            return f"{(c - o) / o * 100:+.3f}%"
+    except Exception:
+        pass
+    return "—"
+
+
+# ── HTML template ─────────────────────────────────────────────────────────────
+
+DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BTC 5-Min Trader</title>
-    <meta http-equiv="refresh" content="30">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
-            background: #0d1117; color: #c9d1d9; padding: 20px;
-        }
-        .container { max-width: 900px; margin: 0 auto; }
-        h1 { color: #58a6ff; margin-bottom: 5px; font-size: 1.5em; }
-        .subtitle { color: #8b949e; margin-bottom: 20px; font-size: 0.9em; }
-        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
-        .card {
-            background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-            padding: 16px; text-align: center;
-        }
-        .card .label { color: #8b949e; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; }
-        .card .value { font-size: 1.6em; font-weight: bold; margin-top: 4px; }
-        .positive { color: #3fb950; }
-        .negative { color: #f85149; }
-        .neutral { color: #58a6ff; }
-        .mode-live { color: #f85149; font-weight: bold; }
-        .mode-paper { color: #3fb950; }
-        table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-        th { background: #161b22; color: #8b949e; text-align: left; padding: 10px 12px;
-             font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px;
-             border-bottom: 1px solid #30363d; }
-        td { padding: 8px 12px; border-bottom: 1px solid #21262d; font-size: 0.9em; }
-        tr:hover { background: #161b22; }
-        .won { color: #3fb950; font-weight: bold; }
-        .lost { color: #f85149; font-weight: bold; }
-        .section-title { color: #58a6ff; margin: 24px 0 8px; font-size: 1.1em; }
-        .updated { color: #484f58; font-size: 0.8em; margin-top: 16px; text-align: center; }
-        .no-data { color: #8b949e; text-align: center; padding: 40px; }
-        @media (max-width: 600px) {
-            .cards { grid-template-columns: repeat(2, 1fr); }
-            td, th { padding: 6px 8px; font-size: 0.8em; }
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BTC Trader Dashboard</title>
+  <meta http-equiv="refresh" content="30">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Courier New', monospace;
+      background: #0d1117; color: #c9d1d9; min-height: 100vh; padding: 24px 16px;
+    }
+    .page-title {
+      font-size: 1.4em; font-weight: 700; color: #58a6ff;
+      display: flex; align-items: center; gap: 10px; margin-bottom: 4px;
+    }
+    .page-subtitle { color: #484f58; font-size: 0.85em; margin-bottom: 28px; }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 4px; margin-bottom: 24px; border-bottom: 1px solid #21262d; }
+    .tab {
+      padding: 10px 20px; cursor: pointer; border-radius: 6px 6px 0 0;
+      font-size: 0.9em; font-weight: 600; color: #8b949e;
+      border: 1px solid transparent; border-bottom: none;
+      transition: all 0.15s;
+    }
+    .tab.active { background: #161b22; color: #c9d1d9; border-color: #30363d; }
+    .tab:hover:not(.active) { color: #c9d1d9; background: #161b22; }
+    .tab-badge {
+      display: inline-block; padding: 2px 7px; border-radius: 10px;
+      font-size: 0.75em; font-weight: 700; margin-left: 6px;
+    }
+    .badge-live { background: #3d1f1f; color: #f85149; }
+    .badge-paper { background: #1a2d1a; color: #3fb950; }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    /* Cards */
+    .cards {
+      display: grid; gap: 12px; margin-bottom: 24px;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    }
+    .card {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 16px 14px; text-align: center;
+    }
+    .card .lbl {
+      color: #8b949e; font-size: 0.72em; text-transform: uppercase;
+      letter-spacing: 1px; margin-bottom: 6px;
+    }
+    .card .val { font-size: 1.55em; font-weight: 700; line-height: 1; }
+
+    .pos  { color: #3fb950; }
+    .neg  { color: #f85149; }
+    .blue { color: #58a6ff; }
+    .grey { color: #8b949e; }
+
+    /* Table */
+    .section-hdr {
+      font-size: 1em; font-weight: 600; color: #58a6ff;
+      margin: 20px 0 10px; display: flex; align-items: center; gap: 8px;
+    }
+    .tbl-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #21262d; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86em; }
+    thead th {
+      background: #161b22; color: #8b949e; text-align: left;
+      padding: 10px 12px; font-size: 0.78em; text-transform: uppercase;
+      letter-spacing: 0.8px; border-bottom: 1px solid #30363d;
+      white-space: nowrap;
+    }
+    tbody td { padding: 9px 12px; border-bottom: 1px solid #161b22; white-space: nowrap; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: #161b22; }
+
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 10px;
+      font-size: 0.8em; font-weight: 700; line-height: 1.4;
+    }
+    .pill-win  { background: #1a2d1a; color: #3fb950; }
+    .pill-loss { background: #2d1a1a; color: #f85149; }
+    .pill-up   { background: #1b2a3b; color: #58a6ff; }
+    .pill-down { background: #2b1f2e; color: #bc8cff; }
+
+    .empty { color: #484f58; text-align: center; padding: 48px; font-size: 0.9em; }
+    .updated { color: #484f58; font-size: 0.78em; margin-top: 20px; text-align: right; }
+
+    @media (max-width: 640px) {
+      .cards { grid-template-columns: repeat(2, 1fr); }
+      .card .val { font-size: 1.3em; }
+    }
+  </style>
 </head>
 <body>
-<div class="container">
-    <h1>&#9889; BTC 5-Min Trader</h1>
-    <p class="subtitle">Polymarket btc-updown-5m markets &mdash; auto-refreshes every 30s</p>
 
-    {% if state %}
-    <div class="cards">
-        <div class="card">
-            <div class="label">Mode</div>
-            <div class="value {{ 'mode-live' if state.mode == 'live' else 'mode-paper' }}">
-                {{ state.mode|upper }}
-            </div>
-        </div>
-        <div class="card">
-            <div class="label">Equity</div>
-            <div class="value {{ 'positive' if state.equity >= 0 else 'negative' }}">
-                ${{ "%.2f"|format(state.equity) }}
-            </div>
-        </div>
-        <div class="card">
-            <div class="label">Peak Equity</div>
-            <div class="value positive">${{ "%.2f"|format(state.peak_equity) }}</div>
-        </div>
-        <div class="card">
-            <div class="label">Max Drawdown</div>
-            <div class="value negative">${{ "%.2f"|format(state.max_drawdown) }}</div>
-        </div>
-    </div>
-    {% endif %}
+<div class="page-title">&#9889; BTC Trader Dashboard</div>
+<p class="page-subtitle">Auto-refreshes every 30s &mdash; UTC times</p>
 
-    {% if stats %}
-    <div class="cards">
-        <div class="card">
-            <div class="label">Total Trades</div>
-            <div class="value neutral">{{ stats.total }}</div>
-        </div>
-        <div class="card">
-            <div class="label">Win Rate</div>
-            <div class="value {{ 'positive' if stats.win_rate >= 0.5 else 'negative' }}">
-                {{ "%.1f"|format(stats.win_rate * 100) }}%
-            </div>
-        </div>
-        <div class="card">
-            <div class="label">Total PnL</div>
-            <div class="value {{ 'positive' if stats.total_pnl >= 0 else 'negative' }}">
-                ${{ "%.2f"|format(stats.total_pnl) }}
-            </div>
-        </div>
-        <div class="card">
-            <div class="label">Avg PnL/Trade</div>
-            <div class="value {{ 'positive' if stats.avg_pnl >= 0 else 'negative' }}">
-                ${{ "%.2f"|format(stats.avg_pnl) }}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <h2 class="section-title">Recent Trades</h2>
-    {% if trades %}
-    <table>
-        <thead>
-            <tr>
-                <th>Time</th>
-                <th>Dir</th>
-                <th>Entry</th>
-                <th>Edge</th>
-                <th>Result</th>
-                <th>PnL</th>
-                <th>BTC Move</th>
-            </tr>
-        </thead>
-        <tbody>
-        {% for t in trades %}
-            <tr>
-                <td>{{ format_time(t.opened_at) }}</td>
-                <td>{{ t.direction }}</td>
-                <td>{{ "%.3f"|format(t.entry_price) }}</td>
-                <td>{{ "%.3f"|format(t.edge) }}</td>
-                <td class="{{ 'won' if t.won else 'lost' }}">{{ 'WIN' if t.won else 'LOSS' }}</td>
-                <td class="{{ 'positive' if t.pnl >= 0 else 'negative' }}">
-                    ${{ "%.2f"|format(t.pnl) }}
-                </td>
-                <td>
-                    {% set move = ((t.btc_at_close - t.btc_at_open) / t.btc_at_open * 100) if t.btc_at_open > 0 else 0 %}
-                    {{ "%+.3f"|format(move) }}%
-                </td>
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <div class="no-data">No trades yet. Bot is running and watching for opportunities...</div>
-    {% endif %}
-
-    {% if state and state.updated_at %}
-    <div class="updated">Last updated: {{ format_time(state.updated_at) }} UTC</div>
-    {% endif %}
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('fivemin', this)">
+    5-Min Bot <span class="tab-badge badge-live">LIVE</span>
+  </div>
+  <div class="tab" onclick="switchTab('hourly', this)">
+    Hourly Bot <span class="tab-badge badge-paper">PAPER</span>
+  </div>
 </div>
+
+<!-- ═══ 5-MIN PANEL ═══════════════════════════════════════════════════════ -->
+<div class="panel active" id="panel-fivemin">
+
+  <div class="cards">
+    <div class="card">
+      <div class="lbl">Mode</div>
+      <div class="val {{ 'neg' if m5_state.get('mode','paper') == 'live' else 'pos' }}">
+        {{ (m5_state.get('mode','paper') or 'paper')|upper }}
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">Equity</div>
+      <div class="val {{ 'pos' if m5_stats.get('total_pnl',0) >= 0 else 'neg' }}">
+        ${{ "%.2f"|format(m5_stats.get('total_pnl', 0)) }}
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">Win Rate</div>
+      <div class="val {{ 'pos' if m5_stats.get('win_rate',0) >= 0.55 else 'neg' }}">
+        {{ "%.1f"|format(m5_stats.get('win_rate', 0) * 100) }}%
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">Trades</div>
+      <div class="val blue">{{ m5_stats.get('total', 0) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Avg PnL</div>
+      <div class="val {{ 'pos' if m5_stats.get('avg_pnl',0) >= 0 else 'neg' }}">
+        ${{ "%.2f"|format(m5_stats.get('avg_pnl', 0)) }}
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">W / L</div>
+      <div class="val grey">
+        <span class="pos">{{ m5_stats.get('wins', 0) }}</span>
+        /
+        <span class="neg">{{ m5_stats.get('losses', 0) }}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-hdr">&#128202; Recent Trades (5-Min)</div>
+  {% if m5_trades %}
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Time (UTC)</th>
+        <th>Market</th>
+        <th>Dir</th>
+        <th>Entry</th>
+        <th>Edge</th>
+        <th>BTC Move</th>
+        <th>Result</th>
+        <th>PnL</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in m5_trades %}
+    <tr>
+      <td>{{ fmt_time(t.get('opened_at')) }}</td>
+      <td style="color:#484f58; max-width:200px; overflow:hidden; text-overflow:ellipsis">
+        {{ t.get('market_slug','')[-20:] }}
+      </td>
+      <td>
+        <span class="pill {{ 'pill-up' if t.get('direction')=='Up' else 'pill-down' }}">
+          {{ t.get('direction','?') }}
+        </span>
+      </td>
+      <td>{{ "%.3f"|format(t.get('entry_price', 0)) }}</td>
+      <td class="{{ 'pos' if t.get('edge',0) > 0 else 'neg' }}">
+        {{ "%+.3f"|format(t.get('edge', 0)) }}
+      </td>
+      <td class="{{ 'pos' if t.get('btc_at_close',0) >= t.get('btc_at_open',1) else 'neg' }}">
+        {{ fmt_move(t) }}
+      </td>
+      <td>
+        <span class="pill {{ 'pill-win' if t.get('won') else 'pill-loss' }}">
+          {{ 'WIN' if t.get('won') else 'LOSS' }}
+        </span>
+      </td>
+      <td class="{{ 'pos' if t.get('pnl',0) >= 0 else 'neg' }}">
+        {{ "%+.2f"|format(t.get('pnl', 0)) }}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">No 5-min trades yet. Bot is watching for opportunities...</div>
+  {% endif %}
+
+  {% if m5_state.get('updated_at') %}
+  <div class="updated">Last updated: {{ fmt_time(m5_state.get('updated_at')) }} UTC</div>
+  {% endif %}
+</div>
+
+<!-- ═══ HOURLY PANEL ══════════════════════════════════════════════════════ -->
+<div class="panel" id="panel-hourly">
+
+  <div class="cards">
+    <div class="card">
+      <div class="lbl">Mode</div>
+      <div class="val pos">PAPER</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Paper PnL</div>
+      <div class="val {{ 'pos' if hr_stats.get('total_pnl',0) >= 0 else 'neg' }}">
+        ${{ "%.2f"|format(hr_stats.get('total_pnl', 0)) }}
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">Win Rate</div>
+      <div class="val {{ 'pos' if hr_stats.get('win_rate',0) >= 0.65 else ('grey' if hr_stats.get('win_rate',0) >= 0.55 else 'neg') }}">
+        {{ "%.1f"|format(hr_stats.get('win_rate', 0) * 100) }}%
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">Trades</div>
+      <div class="val blue">{{ hr_stats.get('total', 0) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Avg PnL</div>
+      <div class="val {{ 'pos' if hr_stats.get('avg_pnl',0) >= 0 else 'neg' }}">
+        ${{ "%.2f"|format(hr_stats.get('avg_pnl', 0)) }}
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">W / L</div>
+      <div class="val grey">
+        <span class="pos">{{ hr_stats.get('wins', 0) }}</span>
+        /
+        <span class="neg">{{ hr_stats.get('losses', 0) }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Backtest benchmark -->
+  <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:14px 16px; margin-bottom:20px; font-size:0.85em; color:#8b949e;">
+    &#128200; <strong style="color:#c9d1d9;">Backtest target:</strong>
+    5-min entry, 0.2% BTC move &rarr; <span style="color:#3fb950;">80% WR, +$12/trade</span>
+    &nbsp;|&nbsp;
+    0.3% move &rarr; <span style="color:#3fb950;">89% WR, +$14/trade</span>
+  </div>
+
+  <div class="section-hdr">&#128202; Recent Trades (Hourly)</div>
+  {% if hr_trades %}
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Time (UTC)</th>
+        <th>Market</th>
+        <th>Dir</th>
+        <th>Entry</th>
+        <th>Edge</th>
+        <th>BTC Open</th>
+        <th>BTC Close</th>
+        <th>Move</th>
+        <th>Result</th>
+        <th>PnL</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in hr_trades %}
+    <tr>
+      <td>{{ fmt_time(t.get('opened_at')) }}</td>
+      <td style="color:#484f58; font-size:0.82em; max-width:200px; overflow:hidden; text-overflow:ellipsis">
+        {{ t.get('market_slug','') }}
+      </td>
+      <td>
+        <span class="pill {{ 'pill-up' if t.get('direction')=='Up' else 'pill-down' }}">
+          {{ t.get('direction','?') }}
+        </span>
+      </td>
+      <td>{{ "%.3f"|format(t.get('entry_price', 0)) }}</td>
+      <td class="{{ 'pos' if t.get('edge',0) > 0 else 'neg' }}">
+        {{ "%+.3f"|format(t.get('edge', 0)) }}
+      </td>
+      <td>${{ "{:,.0f}".format(t.get('btc_at_open', 0)) }}</td>
+      <td>${{ "{:,.0f}".format(t.get('btc_at_close', 0)) }}</td>
+      <td class="{{ 'pos' if t.get('btc_at_close',0) >= t.get('btc_at_open',1) else 'neg' }}">
+        {{ fmt_move(t) }}
+      </td>
+      <td>
+        <span class="pill {{ 'pill-win' if t.get('won') else 'pill-loss' }}">
+          {{ 'WIN' if t.get('won') else 'LOSS' }}
+        </span>
+      </td>
+      <td class="{{ 'pos' if t.get('pnl',0) >= 0 else 'neg' }}">
+        {{ "%+.2f"|format(t.get('pnl', 0)) }}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    No hourly trades yet.<br>
+    Bot enters 5&ndash;12 min into the hour when BTC moves &ge;0.2%.
+    Check back after the next full hour.
+  </div>
+  {% endif %}
+
+  {% if hr_state.get('updated_at') %}
+  <div class="updated">Last updated: {{ fmt_time(hr_state.get('updated_at')) }} UTC</div>
+  {% endif %}
+</div>
+
+<script>
+function switchTab(name, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+}
+</script>
 </body>
 </html>
 """
 
 
-def format_time(ts):
-    """Format unix timestamp to readable string."""
-    try:
-        return datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return "N/A"
-
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def dashboard():
-    state = get_bot_state()
-    stats = get_stats()
-    trades_raw = get_trades(limit=50)
-
-    # Convert dicts to objects for easier template access
-    class Obj:
-        def __init__(self, d):
-            self.__dict__.update(d)
-
-    state_obj = Obj(state) if state else None
-    stats_obj = Obj(stats) if stats else None
-    trade_objs = [Obj(t) for t in trades_raw]
-
+    m5_state, m5_stats, m5_trades = get_5m_data()
+    hr_state, hr_stats, hr_trades = get_hourly_data()
     return render_template_string(
         DASHBOARD_HTML,
-        state=state_obj,
-        stats=stats_obj,
-        trades=trade_objs,
-        format_time=format_time,
+        m5_state=m5_state, m5_stats=m5_stats, m5_trades=m5_trades,
+        hr_state=hr_state, hr_stats=hr_stats, hr_trades=hr_trades,
+        fmt_time=fmt_time, fmt_move=fmt_move,
     )
 
 
-@app.route("/api/state")
-def api_state():
-    state = get_bot_state()
-    return jsonify(state or {"error": "no data"})
+@app.route("/api/5m")
+def api_5m():
+    state, stats, trades = get_5m_data()
+    return jsonify({"state": state, "stats": stats, "trades": trades})
 
 
-@app.route("/api/trades")
-def api_trades():
-    trades = get_trades(limit=100)
-    return jsonify(trades)
+@app.route("/api/hourly")
+def api_hourly():
+    state, stats, trades = get_hourly_data()
+    return jsonify({"state": state, "stats": stats, "trades": trades})
 
 
-@app.route("/api/stats")
-def api_stats():
-    stats = get_stats()
-    return jsonify(stats or {"error": "no data"})
+@app.route("/health")
+def health():
+    return "ok"
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)

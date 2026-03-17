@@ -1,12 +1,35 @@
 version: "3.8"
 
+volumes:
+  tradedata:   # shared volume for JSON trade files between all services
+
 services:
+
+  # ── 5-minute live bot ───────────────────────────────────────────────────
   trader:
     build: .
     restart: always
     env_file: .env
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - POLYMARKET_PRIVATE_KEY=${POLYMARKET_PRIVATE_KEY}
-      - POLYMARKET_API_KEY=${POLYMARKET_API_KEY}
+    volumes:
+      - tradedata:/app/trades
     command: python real_trade.py --mode live --size 50
+
+  # ── Hourly paper bot ────────────────────────────────────────────────────
+  hourly:
+    build: .
+    restart: always
+    env_file: .env
+    volumes:
+      - tradedata:/app/trades
+    command: python real_trade_hourly.py --mode paper --size 50
+
+  # ── Web dashboard ───────────────────────────────────────────────────────
+  web:
+    build: .
+    restart: always
+    env_file: .env
+    volumes:
+      - tradedata:/app/trades
+    ports:
+      - "8080:8080"
+    command: python web.py

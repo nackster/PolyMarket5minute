@@ -43,7 +43,7 @@ from db import init_db, save_trade, update_bot_state
 
 log = structlog.get_logger()
 
-TRADES_FILE = "real_trades.json"
+TRADES_FILE = "trades/real_trades.json"
 GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
 
@@ -843,6 +843,7 @@ class RealTrader:
         for t in state["trades"]:
             t.pop("market", None)
         try:
+            os.makedirs(os.path.dirname(TRADES_FILE), exist_ok=True)
             with open(TRADES_FILE, "w") as f:
                 json.dump(state, f, indent=2)
         except Exception as e:
