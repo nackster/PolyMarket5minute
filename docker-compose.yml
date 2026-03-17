@@ -12,7 +12,7 @@ services:
     env_file: .env
     volumes:
       - tradedata:/app/trades
-    command: python real_trade.py --mode live --size 50
+    command: python real_trade.py --mode paper --size 50
 
   # ── Hourly paper bot ────────────────────────────────────────────────────
   hourly:
