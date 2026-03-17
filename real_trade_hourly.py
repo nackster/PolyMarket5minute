@@ -247,10 +247,10 @@ def get_market_prices(market: MarketInfo) -> tuple[float, float]:
 MIN_SECS_INTO  = 60     # enter at 1+ minutes into the hour
 MAX_SECS_INTO  = 300    # don't enter after 5 minutes (before market reprices)
 MIN_MOVE_PCT   = 0.002  # 0.2% minimum BTC move from hourly open
-MAX_ENTRY      = 0.70   # cap entry — above 0.70 the payoff asymmetry hurts
+MAX_ENTRY      = 0.75   # cap entry — real guard is MIN_EDGE; 0.75 allows for AMM repricing
 MIN_ENTRY      = 0.40   # don't buy cheap contrarian tokens
-MIN_EDGE       = 0.05   # 5% minimum edge (higher bar than 5-min due to longer hold)
-SLIPPAGE       = 0.03   # 3 cents above AMM price to ensure fill
+MIN_EDGE       = 0.05   # 5% minimum edge — this is the real filter, not MAX_ENTRY
+SLIPPAGE       = 0.01   # 1 cent above ask (was 3c; AMM fills at ask anyway)
 WINDOW_SECS    = 3600
 
 
@@ -298,7 +298,7 @@ def evaluate_hourly(
         prob_win = 1.0 - prob
 
     # Bail early if market has already repriced above our cap
-    if ask >= MAX_ENTRY:
+    if ask > MAX_ENTRY:
         return None
 
     entry_price = min(ask + SLIPPAGE, MAX_ENTRY)
@@ -567,7 +567,7 @@ class HourlyTrader:
             market_price = price_up if pos.direction == "Up" else price_down
 
             price = round(min(market_price + SLIPPAGE, MAX_ENTRY), 2)
-            if price >= MAX_ENTRY:
+            if price > MAX_ENTRY:
                 print(f"[{_ts()}]   Market price too high: {market_price:.2f} — skipping")
                 return False
 
