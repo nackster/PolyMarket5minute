@@ -245,7 +245,7 @@ def get_market_prices(market: MarketInfo) -> tuple[float, float]:
 # We use 0.2% for more frequency, accept 80% WR at <0.60 entry price
 
 MIN_SECS_INTO  = 60     # enter at 1+ minutes into the hour
-MAX_SECS_INTO  = 300    # don't enter after 5 minutes (before market reprices)
+MAX_SECS_INTO  = 1200   # don't enter after 20 minutes (hourly markets reprice slower than 5-min)
 MIN_MOVE_PCT   = 0.002  # 0.2% minimum BTC move from hourly open
 MAX_ENTRY      = 0.75   # cap entry — real guard is MIN_EDGE; 0.75 allows for AMM repricing
 MIN_ENTRY      = 0.40   # don't buy cheap contrarian tokens
@@ -362,7 +362,7 @@ class HourlyTrader:
         print(bold(f"  Polymarket bitcoin-up-or-down hourly markets"))
         print(bold("=" * 65))
         print(f"  Mode: {self.mode.upper()}  |  Size: ${self.trade_size}")
-        print(f"  Entry window: {MIN_SECS_INTO}-{MAX_SECS_INTO}s into each hour")
+        print(f"  Entry window: {MIN_SECS_INTO}-{MAX_SECS_INTO}s ({MAX_SECS_INTO//60}min) into each hour")
         print(f"  Min BTC move: {MIN_MOVE_PCT*100:.1f}%  |  Max entry: {MAX_ENTRY}")
         if self.mode == "live":
             print(yellow("  WARNING: Real orders will be placed on Polymarket!"))
