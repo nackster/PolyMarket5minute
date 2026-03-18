@@ -52,8 +52,10 @@ HL_MAINNET_URL = "https://api.hyperliquid.xyz"
 TRADES_FILE    = "trades/hl_trades.json"
 
 # Stat arb signal
+# Backtest (90d): Z>2.0 + 1h cooldown = 13.7 trades/day, 58.5% WR, $1,009/mo at $1k x 5x
+#                 Z>2.0 + 1h cooldown = $20,170/mo at $20k x 5x (vs $355/mo at Z>2.5, 4h CD)
 ZSCORE_PERIOD  = 60       # 60 one-minute samples = 1 hour rolling window
-ENTRY_Z        = 2.5      # enter when |Z| exceeds this
+ENTRY_Z        = 2.0      # enter when |Z| exceeds this (was 2.5 — lower = more signals)
 EXIT_Z         = 0.5      # exit when |Z| drops below this
 
 # Risk management
@@ -61,7 +63,7 @@ STOP_LOSS_PCT  = 0.012    # 1.2% hard stop from entry
 TRAIL_PCT      = 0.008    # 0.8% trail from peak
 BREAKEVEN_PCT  = 0.006    # move stop to breakeven at +0.6%
 MAX_HOLD_SECS  = 86400    # max 24 hours per trade
-COOLDOWN_SECS  = 14400    # 4 hours between trades
+COOLDOWN_SECS  = 3600     # 1 hour between trades (was 4h — 1h = 3.5x frequency)
 
 # Limit order behaviour (live mode)
 LIMIT_OFFSET   = 0.0001   # post limit 0.01% inside market to capture maker rebate
