@@ -1,0 +1,50 @@
+{
+  "started_at": "2026-03-18",
+  "initial": 10000.0,
+  "cash": 10000.0,
+  "position": null,
+  "equity": 10000.0,
+  "peak_equity": 10000.0,
+  "status": "cash",
+  "last_check": "2026-03-18",
+  "next_check": "2026-03-25",
+  "signal": {
+    "in_cash": true,
+    "winner": null,
+    "scores": {
+      "BTC-USD": -0.23894571417070368,
+      "ETH-USD": -0.3232553743392291,
+      "SOL-USD": -0.3698589350312542
+    },
+    "uptrend": {
+      "BTC-USD": false,
+      "ETH-USD": false,
+      "SOL-USD": false
+    },
+    "details": {
+      "BTC-USD": {
+        "price": 72376.2,
+        "ma200": 93396.35,
+        "uptrend": false,
+        "momentum": -23.9,
+        "date": "2026-03-18"
+      },
+      "ETH-USD": {
+        "price": 2239.26,
+        "ma200": 3204.67,
+        "uptrend": false,
+        "momentum": -32.3,
+        "date": "2026-03-18"
+      },
+      "SOL-USD": {
+        "price": 90.57,
+        "ma200": 147.84,
+        "uptrend": false,
+        "momentum": -37.0,
+        "date": "2026-03-18"
+      }
+    },
+    "reason": "All assets below 200d MA \u2014 stay in cash"
+  },
+  "trades": []
+}

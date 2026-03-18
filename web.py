@@ -16,9 +16,13 @@ from db import get_bot_state, get_trades, get_stats
 
 app = Flask(__name__)
 
-TRADES_FILE_5M     = "trades/real_trades.json"
-TRADES_FILE_HOURLY = "trades/real_trades_hourly.json"
-TRADES_FILE_HL     = "trades/hl_trades.json"
+TRADES_FILE_5M      = "trades/real_trades.json"
+TRADES_FILE_HOURLY  = "trades/real_trades_hourly.json"
+TRADES_FILE_HL      = "trades/hl_trades.json"
+TRADES_FILE_BACKTEST= "trades/backtest_crypto_trades.json"
+TRADES_FILE_HL_BT   = "trades/hl_momentum_backtest.json"
+TRADES_FILE_HL_LIVE = "trades/hl_momentum_live.json"
+TRADES_FILE_MOMENTUM= "trades/crypto_momentum_live.json"
 
 
 # ── Data helpers ─────────────────────────────────────────────────────────────
@@ -106,6 +110,76 @@ def get_hl_data():
     trades = list(reversed(state["trades"]))[:50]
     stats  = compute_hl_stats(state["trades"])
     return state, stats, trades
+
+
+def get_backtest_data():
+    """Load crypto momentum backtest results from JSON."""
+    empty = {
+        "settings": {},
+        "summary":  {"final": 0, "peak": 0, "total_return": 0, "peak_return": 0,
+                     "cagr": 0, "max_dd": 0, "cash_periods": 0, "total_trades": 0},
+        "trades":   [],
+    }
+    if not os.path.exists(TRADES_FILE_BACKTEST):
+        return empty
+    try:
+        with open(TRADES_FILE_BACKTEST) as f:
+            return json.load(f)
+    except Exception:
+        return empty
+
+
+def get_hl_backtest_data():
+    """Load HL perpetuals backtest results from JSON."""
+    empty = {
+        "settings": {},
+        "summary":  {"final": 0, "peak": 0, "total_return": 0, "peak_return": 0,
+                     "cagr": 0, "max_dd": 0, "total_funding": 0, "total_fees": 0,
+                     "long_periods": 0, "short_periods": 0, "flat_periods": 0},
+        "trades":   [],
+    }
+    if not os.path.exists(TRADES_FILE_HL_BT):
+        return empty
+    try:
+        with open(TRADES_FILE_HL_BT) as f:
+            return json.load(f)
+    except Exception:
+        return empty
+
+
+def get_hl_live():
+    """Load HL perps live paper trading state from JSON."""
+    empty = {
+        "started_at": None, "initial": 10000, "equity": 10000,
+        "peak_equity": 10000, "leverage": 1.0, "status": "flat",
+        "position": None, "last_check": None, "next_check": None,
+        "signal": None, "trades": [],
+        "total_funding_paid": 0.0, "total_fees_paid": 0.0,
+    }
+    if not os.path.exists(TRADES_FILE_HL_LIVE):
+        return empty
+    try:
+        with open(TRADES_FILE_HL_LIVE) as f:
+            return json.load(f)
+    except Exception:
+        return empty
+
+
+def get_momentum_live():
+    """Load live paper trading state from JSON."""
+    empty = {
+        "started_at": None, "initial": 10000, "equity": 10000,
+        "peak_equity": 10000, "cash": 10000, "status": "cash",
+        "position": None, "last_check": None, "next_check": None,
+        "signal": None, "trades": [],
+    }
+    if not os.path.exists(TRADES_FILE_MOMENTUM):
+        return empty
+    try:
+        with open(TRADES_FILE_MOMENTUM) as f:
+            return json.load(f)
+    except Exception:
+        return empty
 
 
 def fmt_time(ts):
@@ -238,6 +312,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="tab" onclick="switchTab('hl', this)">
     Hyperliquid <span class="tab-badge badge-paper">PAPER</span>
+  </div>
+  <div class="tab" onclick="switchTab('backtest', this)">
+    Crypto Backtest <span class="tab-badge" style="background:#1f2a1f;color:#d4b44a;">HIST</span>
+  </div>
+  <div class="tab" onclick="switchTab('momentum', this)">
+    Momentum Bot <span class="tab-badge badge-paper">PAPER</span>
+  </div>
+  <div class="tab" onclick="switchTab('hlbacktest', this)">
+    HL Perps <span class="tab-badge" style="background:#1f1a2e;color:#bc8cff;">HIST</span>
   </div>
 </div>
 
@@ -556,6 +639,551 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   {% endif %}
 </div>
 
+<!-- ═══ CRYPTO BACKTEST PANEL ════════════════════════════════════════════ -->
+<div class="panel" id="panel-backtest">
+
+  {% set bt = bt_data %}
+  {% set bs = bt.get('summary', {}) %}
+  {% set bset = bt.get('settings', {}) %}
+
+  <!-- Strategy info bar -->
+  <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:14px 16px; margin-bottom:20px; font-size:0.85em; color:#8b949e; line-height:1.7;">
+    &#128200; <strong style="color:#c9d1d9;">Crypto Momentum Strategy</strong>
+    &nbsp;&mdash;&nbsp;
+    Universe: <span style="color:#58a6ff;">{{ ', '.join(bset.get('universe', [])) }}</span>
+    &nbsp;|&nbsp;
+    Period: <span style="color:#58a6ff;">{{ bset.get('period','monthly') }}</span>
+    &nbsp;|&nbsp;
+    Lookback: <span style="color:#58a6ff;">{{ bset.get('lookback', 3) }}mo</span>
+    &nbsp;|&nbsp;
+    Trend filter: <span style="color:#58a6ff;">{{ bset.get('trend_ma', 200) }}d MA</span>
+    &nbsp;|&nbsp;
+    Date range: <span style="color:#58a6ff;">{{ bset.get('start','') }} &rarr; {{ bset.get('end','') }}</span>
+  </div>
+
+  <!-- Summary cards -->
+  <div class="cards" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
+    <div class="card">
+      <div class="lbl">Initial</div>
+      <div class="val blue">${{ "{:,.0f}".format(bset.get('initial', 10000)) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Final Equity</div>
+      <div class="val pos">${{ "{:,.0f}".format(bs.get('final', 0)) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Total Return</div>
+      <div class="val pos">+{{ "{:,.0f}".format(bs.get('total_return', 0)) }}%</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Peak Equity</div>
+      <div class="val" style="color:#d4b44a;">${{ "{:,.0f}".format(bs.get('peak', 0)) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Peak Return</div>
+      <div class="val" style="color:#d4b44a;">+{{ "{:,.0f}".format(bs.get('peak_return', 0)) }}%</div>
+    </div>
+    <div class="card">
+      <div class="lbl">CAGR</div>
+      <div class="val pos">{{ "+{:.1f}".format(bs.get('cagr', 0)) }}%/yr</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Max Drawdown</div>
+      <div class="val neg">-{{ "{:.1f}".format(bs.get('max_dd', 0)) }}%</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Rotations</div>
+      <div class="val blue">{{ bs.get('total_trades', 0) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Cash Periods</div>
+      <div class="val grey">{{ bs.get('cash_periods', 0) }}</div>
+    </div>
+  </div>
+
+  <div class="section-hdr">&#128202; Rotation History — All Trades</div>
+  {% if bt.get('trades') %}
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Date</th>
+        <th>Asset</th>
+        <th>Buy Price</th>
+        <th>Momentum</th>
+        <th>Equity After</th>
+        <th>Return vs Initial</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in bt.get('trades', []) %}
+    {% set ret_pct = ((t.get('equity_after', 0) - bset.get('initial', 10000)) / bset.get('initial', 10000) * 100) if bset.get('initial', 10000) > 0 else 0 %}
+    <tr>
+      <td style="color:#484f58;">{{ loop.index }}</td>
+      <td>{{ t.get('date','') }}</td>
+      <td>
+        {% set ticker = t.get('ticker','') %}
+        {% if 'BTC' in ticker %}
+          <span class="pill pill-up">&#8383; {{ t.get('name','') }}</span>
+        {% elif 'ETH' in ticker %}
+          <span class="pill" style="background:#1b1f3b;color:#9198ff;">&#9830; {{ t.get('name','') }}</span>
+        {% elif 'SOL' in ticker %}
+          <span class="pill" style="background:#1a2b2b;color:#14f195;">&#9670; {{ t.get('name','') }}</span>
+        {% else %}
+          <span class="pill pill-down">{{ t.get('name','') }}</span>
+        {% endif %}
+      </td>
+      <td>${{ "{:,.2f}".format(t.get('price', 0)) }}</td>
+      <td class="{{ 'pos' if t.get('momentum_pct', 0) >= 0 else 'neg' }}">
+        {{ "%+.1f"|format(t.get('momentum_pct', 0)) }}%
+      </td>
+      <td class="pos" style="font-weight:600;">
+        ${{ "{:,.0f}".format(t.get('equity_after', 0)) }}
+      </td>
+      <td class="{{ 'pos' if ret_pct >= 0 else 'neg' }}">
+        {{ "{:+,.0f}".format(ret_pct) }}%
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    No backtest data found.<br>
+    Run: <code style="color:#58a6ff;">python backtest_crypto.py --tickers BTC-USD,ETH-USD,SOL-USD --lookback 2 --top-k 1 --trend-ma 200 --period weekly --export</code>
+  </div>
+  {% endif %}
+
+  <div class="updated">
+    Backtest: {{ bset.get('start','') }} &rarr; {{ bset.get('end','') }}
+    &nbsp;&mdash;&nbsp; Weekly rebalancing, {{ bset.get('trend_ma', 200) }}d MA bear filter
+  </div>
+</div>
+
+<!-- ═══ MOMENTUM BOT PANEL ════════════════════════════════════════════════ -->
+<div class="panel" id="panel-momentum">
+
+  {% set ml = ml_data %}
+  {% set ml_pos = ml.get('position') %}
+  {% set ml_sig = ml.get('signal') or {} %}
+  {% set ml_initial = ml.get('initial', 10000) %}
+  {% set ml_equity  = ml.get('equity',  ml_initial) %}
+  {% set ml_peak    = ml.get('peak_equity', ml_initial) %}
+  {% set ml_ret     = ((ml_equity - ml_initial) / ml_initial * 100) if ml_initial > 0 else 0 %}
+  {% set ml_peak_ret= ((ml_peak - ml_initial) / ml_initial * 100) if ml_initial > 0 else 0 %}
+
+  <!-- Info bar -->
+  <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:14px 16px; margin-bottom:20px; font-size:0.85em; color:#8b949e; line-height:1.7;">
+    &#9889; <strong style="color:#c9d1d9;">Live Paper Trading</strong>
+    &nbsp;&mdash;&nbsp; BTC + ETH + SOL &nbsp;|&nbsp; Weekly rebalancing &nbsp;|&nbsp; 2mo lookback &nbsp;|&nbsp; 200d MA filter
+    &nbsp;|&nbsp; Same strategy: +709,301% backtest (2016&ndash;2026)
+    <br>
+    Last check: <span style="color:#58a6ff;">{{ ml.get('last_check') or 'Never' }}</span>
+    &nbsp;|&nbsp;
+    Next check: <span style="color:#58a6ff;">{{ ml.get('next_check') or '—' }}</span>
+  </div>
+
+  <!-- Summary cards -->
+  <div class="cards" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
+    <div class="card">
+      <div class="lbl">Status</div>
+      {% if ml.get('status') == 'holding' and ml_pos %}
+        <div class="val pos">HOLDING</div>
+      {% else %}
+        <div class="val grey">CASH</div>
+      {% endif %}
+    </div>
+    <div class="card">
+      <div class="lbl">Started</div>
+      <div class="val blue" style="font-size:1.1em;">{{ ml.get('started_at') or '—' }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Initial</div>
+      <div class="val blue">${{ "{:,.0f}".format(ml_initial) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Current Equity</div>
+      <div class="val {{ 'pos' if ml_ret >= 0 else 'neg' }}">${{ "{:,.0f}".format(ml_equity) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Total Return</div>
+      <div class="val {{ 'pos' if ml_ret >= 0 else 'neg' }}">{{ "{:+.1f}".format(ml_ret) }}%</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Peak Equity</div>
+      <div class="val" style="color:#d4b44a;">${{ "{:,.0f}".format(ml_peak) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Rotations</div>
+      <div class="val blue">{{ ml.get('trades', []) | selectattr('action', 'equalto', 'BUY') | list | length }}</div>
+    </div>
+  </div>
+
+  <!-- Current position -->
+  {% if ml_pos %}
+  <div style="background:#0d2218; border:1px solid #1a4a2e; border-radius:8px; padding:16px; margin-bottom:20px;">
+    <div class="section-hdr" style="margin:0 0 12px;">&#128200; Current Position</div>
+    <div style="display:flex; gap:32px; flex-wrap:wrap; font-size:0.9em;">
+      <div><span style="color:#8b949e;">Asset</span><br><strong style="color:#3fb950; font-size:1.2em;">{{ ml_pos.get('name','') }}</strong></div>
+      <div><span style="color:#8b949e;">Entry Price</span><br><strong>${{ "{:,.2f}".format(ml_pos.get('entry_price', 0)) }}</strong></div>
+      <div><span style="color:#8b949e;">Entry Date</span><br><strong>{{ ml_pos.get('entry_date','') }}</strong></div>
+      <div><span style="color:#8b949e;">Units</span><br><strong>{{ "{:.6f}".format(ml_pos.get('units', 0)) }}</strong></div>
+      <div><span style="color:#8b949e;">Entry Equity</span><br><strong>${{ "{:,.0f}".format(ml_pos.get('entry_equity', 0)) }}</strong></div>
+    </div>
+  </div>
+  {% else %}
+  <div style="background:#1a1a0d; border:1px solid #3a3a1a; border-radius:8px; padding:16px; margin-bottom:20px; font-size:0.9em; color:#8b949e;">
+    &#9203; <strong style="color:#d4b44a;">Waiting for signal</strong>
+    &nbsp;&mdash;&nbsp; All assets below 200d MA. Bot is in cash preserving capital until the bull market resumes.
+  </div>
+  {% endif %}
+
+  <!-- Market status (latest signal) -->
+  {% if ml_sig.get('details') %}
+  <div class="section-hdr">&#127763; Current Market Status</div>
+  <div class="cards" style="grid-template-columns: repeat(3, 1fr); margin-bottom:24px;">
+    {% for ticker in ['BTC-USD', 'ETH-USD', 'SOL-USD'] %}
+    {% set d = ml_sig.get('details', {}).get(ticker, {}) %}
+    {% set is_up = d.get('uptrend', False) %}
+    <div class="card" style="border-color: {{ '#1a4a2e' if is_up else '#4a1a1a' }};">
+      <div class="lbl">{{ 'Bitcoin' if 'BTC' in ticker else ('Ethereum' if 'ETH' in ticker else 'Solana') }}</div>
+      <div class="val {{ 'pos' if is_up else 'neg' }}" style="font-size:1.1em;">
+        {% if d.get('price') %}${{ "{:,.0f}".format(d['price']) }}{% else %}—{% endif %}
+      </div>
+      <div style="font-size:0.75em; margin-top:6px; color:#8b949e;">
+        MA200: {% if d.get('ma200') %}${{ "{:,.0f}".format(d['ma200']) }}{% else %}—{% endif %}
+      </div>
+      <div style="font-size:0.8em; margin-top:4px;" class="{{ 'pos' if d.get('momentum', 0) >= 0 else 'neg' }}">
+        {{ "{:+.1f}".format(d.get('momentum', 0)) }}% momentum
+      </div>
+      <div style="font-size:0.72em; margin-top:6px; font-weight:700; letter-spacing:0.5px;"
+           class="{{ 'pos' if is_up else 'neg' }}">
+        {{ 'ABOVE MA &#10003;' if is_up else 'BELOW MA &#10007;' }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- Trade history -->
+  {% set ml_buys = ml.get('trades', []) | selectattr('action', 'equalto', 'BUY') | list %}
+  <div class="section-hdr">&#128202; Rotation History</div>
+  {% if ml_buys %}
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Date</th>
+        <th>Asset</th>
+        <th>Buy Price</th>
+        <th>Units</th>
+        <th>Momentum</th>
+        <th>Equity After</th>
+        <th>Return vs Initial</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in ml_buys %}
+    {% set ret_pct = ((t.get('equity_after', 0) - ml_initial) / ml_initial * 100) if ml_initial > 0 else 0 %}
+    <tr>
+      <td style="color:#484f58;">{{ loop.index }}</td>
+      <td>{{ t.get('date','') }}</td>
+      <td>
+        {% set tn = t.get('ticker','') %}
+        {% if 'BTC' in tn %}
+          <span class="pill pill-up">&#8383; {{ t.get('name','') }}</span>
+        {% elif 'ETH' in tn %}
+          <span class="pill" style="background:#1b1f3b;color:#9198ff;">&#9830; {{ t.get('name','') }}</span>
+        {% elif 'SOL' in tn %}
+          <span class="pill" style="background:#1a2b2b;color:#14f195;">&#9670; {{ t.get('name','') }}</span>
+        {% else %}
+          <span class="pill pill-down">{{ t.get('name','') }}</span>
+        {% endif %}
+      </td>
+      <td>${{ "{:,.2f}".format(t.get('price', 0)) }}</td>
+      <td style="color:#8b949e; font-size:0.85em;">{{ "{:.6f}".format(t.get('units', 0)) }}</td>
+      <td class="{{ 'pos' if t.get('momentum_pct', 0) >= 0 else 'neg' }}">
+        {{ "%+.1f"|format(t.get('momentum_pct', 0)) }}%
+      </td>
+      <td class="pos" style="font-weight:600;">${{ "{:,.0f}".format(t.get('equity_after', 0)) }}</td>
+      <td class="{{ 'pos' if ret_pct >= 0 else 'neg' }}">
+        {{ "{:+,.0f}".format(ret_pct) }}%
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    No rotations yet &mdash; bot is in cash waiting for the 200d MA signal.<br>
+    <span style="font-size:0.85em; color:#484f58; margin-top:8px; display:block;">
+      Run <code style="color:#58a6ff;">python crypto_momentum_bot.py</code> weekly to check for signals.
+    </span>
+  </div>
+  {% endif %}
+
+  <div class="updated">
+    Paper trading started {{ ml.get('started_at') or '—' }} &nbsp;&mdash;&nbsp;
+    Signal updates every 7 days
+  </div>
+</div>
+
+<!-- ═══ HL PERPS BACKTEST PANEL ══════════════════════════════════════════ -->
+<div class="panel" id="panel-hlbacktest">
+
+  <!-- ── Live paper trading status ── -->
+  {% set live = hl_live_data %}
+  {% set live_pos = live.get('position') %}
+  {% set live_sig = live.get('signal') or {} %}
+  {% set live_initial = live.get('initial', 10000) %}
+  {% set live_equity  = live.get('equity', live_initial) %}
+  {% set live_peak    = live.get('peak_equity', live_initial) %}
+  {% set live_lev     = live.get('leverage', 1.0) %}
+  {% set live_ret     = ((live_equity - live_initial) / live_initial * 100) if live_initial > 0 else 0 %}
+
+  <div style="background:#1a1a2e; border:1px solid #4a3a6e; border-radius:8px; padding:16px; margin-bottom:20px;">
+    <div style="font-size:0.95em; font-weight:700; color:#bc8cff; margin-bottom:12px;">
+      &#9889; Live Paper Trading &nbsp;&mdash;&nbsp;
+      <span style="font-weight:400; color:#8b949e; font-size:0.85em;">
+        BTC + ETH + SOL &nbsp;|&nbsp; Weekly &nbsp;|&nbsp; 2mo momentum &nbsp;|&nbsp; 200d MA &nbsp;|&nbsp; {{ live_lev }}x leverage
+      </span>
+    </div>
+    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start;">
+      <!-- Status cards -->
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div class="card" style="min-width:110px; padding:10px 12px;">
+          <div class="lbl">Status</div>
+          {% if live.get('status') == 'long' %}
+            <div class="val pos" style="font-size:1.2em;">LONG</div>
+          {% elif live.get('status') == 'short' %}
+            <div class="val" style="font-size:1.2em;color:#bc8cff;">SHORT</div>
+          {% else %}
+            <div class="val grey" style="font-size:1.2em;">FLAT</div>
+          {% endif %}
+        </div>
+        <div class="card" style="min-width:110px; padding:10px 12px;">
+          <div class="lbl">Equity</div>
+          <div class="val {{ 'pos' if live_ret >= 0 else 'neg' }}" style="font-size:1.2em;">
+            ${{ "{:,.0f}".format(live_equity) }}
+          </div>
+        </div>
+        <div class="card" style="min-width:110px; padding:10px 12px;">
+          <div class="lbl">Return</div>
+          <div class="val {{ 'pos' if live_ret >= 0 else 'neg' }}" style="font-size:1.2em;">
+            {{ "{:+.1f}".format(live_ret) }}%
+          </div>
+        </div>
+        <div class="card" style="min-width:110px; padding:10px 12px;">
+          <div class="lbl">Peak</div>
+          <div class="val" style="color:#d4b44a; font-size:1.2em;">
+            ${{ "{:,.0f}".format(live_peak) }}
+          </div>
+        </div>
+        <div class="card" style="min-width:110px; padding:10px 12px;">
+          <div class="lbl">Next Check</div>
+          <div class="val blue" style="font-size:0.95em;">{{ live.get('next_check') or '—' }}</div>
+        </div>
+      </div>
+      <!-- Current position or flat notice -->
+      {% if live_pos %}
+      <div style="background:#0d2218; border:1px solid #1a4a2e; border-radius:6px; padding:10px 14px; font-size:0.85em; flex:1; min-width:200px;">
+        <div style="color:#8b949e; margin-bottom:6px; font-size:0.78em; text-transform:uppercase; letter-spacing:0.8px;">Current Position</div>
+        <strong style="color:#3fb950; font-size:1.1em;">{{ live_pos.get('direction','') }} {{ live_pos.get('name','') }}</strong><br>
+        <span style="color:#8b949e;">Entry: </span><strong>${{ "{:,.4f}".format(live_pos.get('entry_price', 0)) }}</strong>
+        &nbsp;&nbsp;<span style="color:#8b949e;">on </span><strong>{{ live_pos.get('entry_date','') }}</strong>
+      </div>
+      {% else %}
+      <div style="background:#1a1a0d; border:1px solid #3a3a1a; border-radius:6px; padding:10px 14px; font-size:0.85em; flex:1; min-width:200px; color:#8b949e;">
+        &#9203; <strong style="color:#d4b44a;">FLAT</strong> — All assets below 200d MA.<br>
+        Capital preserved until bull market resumes.
+      </div>
+      {% endif %}
+    </div>
+    <!-- Market signals -->
+    {% if live_sig.get('details') %}
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+      {% for ticker in ['BTC-USD', 'ETH-USD', 'SOL-USD'] %}
+      {% set d = live_sig.get('details', {}).get(ticker, {}) %}
+      {% set is_up = d.get('uptrend', False) %}
+      <div style="background:#0d1117; border:1px solid {{ '#1a4a2e' if is_up else '#4a1a1a' }}; border-radius:6px; padding:6px 12px; font-size:0.8em; display:flex; align-items:center; gap:10px;">
+        <span class="{{ 'pos' if is_up else 'neg' }}" style="font-weight:700;">
+          {{ 'BTC' if 'BTC' in ticker else ('ETH' if 'ETH' in ticker else 'SOL') }}
+        </span>
+        {% if d.get('price') %}
+        <span>${{ "{:,.0f}".format(d['price']) }}</span>
+        {% endif %}
+        <span class="{{ 'pos' if d.get('momentum', 0) >= 0 else 'neg' }}">
+          {{ "{:+.1f}".format(d.get('momentum', 0)) }}%
+        </span>
+        <span class="{{ 'pos' if is_up else 'neg' }}" style="font-size:0.85em;">
+          {{ '▲ ABOVE MA' if is_up else '▼ BELOW MA' }}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div style="color:#484f58; font-size:0.75em; margin-top:8px;">
+      Run <code style="color:#bc8cff;">python hl_momentum_bot.py</code> to check signal
+      &nbsp;|&nbsp; Started {{ live.get('started_at') or 'Not yet started' }}
+      &nbsp;|&nbsp; Last check: {{ live.get('last_check') or '—' }}
+    </div>
+  </div>
+
+  {% set hl = hl_bt_data %}
+  {% set hls = hl.get('summary', {}) %}
+  {% set hlset = hl.get('settings', {}) %}
+
+  <!-- Strategy info bar -->
+  <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:14px 16px; margin-bottom:20px; font-size:0.85em; color:#8b949e; line-height:1.7;">
+    &#128200; <strong style="color:#c9d1d9;">Hyperliquid Perpetuals Strategy</strong>
+    &nbsp;&mdash;&nbsp;
+    Universe: <span style="color:#bc8cff;">{{ ', '.join(hlset.get('universe', [])) }}</span>
+    &nbsp;|&nbsp;
+    Leverage: <span style="color:#bc8cff;">{{ hlset.get('leverage', 1.0) }}x</span>
+    &nbsp;|&nbsp;
+    Lookback: <span style="color:#bc8cff;">{{ hlset.get('lookback', 2) }}mo</span>
+    &nbsp;|&nbsp;
+    Bear market: <span style="color:#bc8cff;">{{ 'SHORT weakest' if hlset.get('short_bear', True) else 'Go flat' }}</span>
+    &nbsp;|&nbsp;
+    Funding: <span style="color:#bc8cff;">{{ "{:.4f}".format((hlset.get('funding_rate_8h', 0.00005)) * 100) }}%/8hr</span>
+    &nbsp;|&nbsp;
+    Date range: <span style="color:#bc8cff;">{{ hlset.get('start','') }} &rarr; {{ hlset.get('end','') }}</span>
+  </div>
+
+  <!-- Summary cards -->
+  <div class="cards" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
+    <div class="card">
+      <div class="lbl">Initial</div>
+      <div class="val blue">${{ "{:,.0f}".format(hlset.get('initial', 10000)) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Final Equity</div>
+      <div class="val pos">${{ "{:,.0f}".format(hls.get('final', 0)) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Total Return</div>
+      <div class="val pos">+{{ "{:,.0f}".format(hls.get('total_return', 0)) }}%</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Peak Equity</div>
+      <div class="val" style="color:#d4b44a;">${{ "{:,.0f}".format(hls.get('peak', 0)) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">CAGR</div>
+      <div class="val pos">{{ "+{:.1f}".format(hls.get('cagr', 0)) }}%/yr</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Max Drawdown</div>
+      <div class="val neg">-{{ "{:.1f}".format(hls.get('max_dd', 0)) }}%</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Long Periods</div>
+      <div class="val pos">{{ hls.get('long_periods', 0) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Short Periods</div>
+      <div class="val" style="color:#bc8cff;">{{ hls.get('short_periods', 0) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Flat Periods</div>
+      <div class="val grey">{{ hls.get('flat_periods', 0) }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Funding Net</div>
+      <div class="val {{ 'pos' if hls.get('total_funding', 0) >= 0 else 'neg' }}">
+        ${{ "{:,.0f}".format(hls.get('total_funding', 0)) }}
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">Total Fees</div>
+      <div class="val neg">-${{ "{:,.0f}".format(hls.get('total_fees', 0)) }}</div>
+    </div>
+  </div>
+
+  <div class="section-hdr">&#128202; Trade Log — All Positions</div>
+  {% set hl_trades = hl.get('trades', []) | selectattr('action', 'in', ['LONG', 'SHORT']) | list %}
+  {% if hl_trades %}
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Date</th>
+        <th>Dir</th>
+        <th>Asset</th>
+        <th>Entry</th>
+        <th>Exit</th>
+        <th>Days</th>
+        <th>Momentum</th>
+        <th>PnL</th>
+        <th>Equity After</th>
+        <th>Return vs Initial</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in hl_trades %}
+    {% set ret_pct = ((t.get('equity_after', 0) - hlset.get('initial', 10000)) / hlset.get('initial', 10000) * 100) if hlset.get('initial', 10000) > 0 else 0 %}
+    <tr>
+      <td style="color:#484f58;">{{ loop.index }}</td>
+      <td>{{ t.get('date','') }}</td>
+      <td>
+        {% if t.get('direction') == 'LONG' %}
+          <span class="pill pill-up">&#8593; LONG</span>
+        {% elif t.get('direction') == 'SHORT' %}
+          <span class="pill" style="background:#2b1a2e;color:#bc8cff;">&#8595; SHORT</span>
+        {% else %}
+          <span class="pill pill-loss">FLAT</span>
+        {% endif %}
+      </td>
+      <td>
+        {% set ticker = t.get('ticker','') %}
+        {% if 'BTC' in ticker %}
+          <span class="pill pill-up">&#8383; {{ t.get('name','') }}</span>
+        {% elif 'ETH' in ticker %}
+          <span class="pill" style="background:#1b1f3b;color:#9198ff;">&#9830; {{ t.get('name','') }}</span>
+        {% elif 'SOL' in ticker %}
+          <span class="pill" style="background:#1a2b2b;color:#14f195;">&#9670; {{ t.get('name','') }}</span>
+        {% else %}
+          <span class="pill pill-down">{{ t.get('name','') }}</span>
+        {% endif %}
+      </td>
+      <td>{% if t.get('entry_price') %}${{ "{:,.2f}".format(t['entry_price']) }}{% else %}—{% endif %}</td>
+      <td>{% if t.get('exit_price') %}${{ "{:,.2f}".format(t['exit_price']) }}{% else %}<span style="color:#484f58;">open</span>{% endif %}</td>
+      <td style="color:#8b949e;">{{ t.get('days_held', 0) }}</td>
+      <td class="{{ 'pos' if t.get('momentum_pct', 0) >= 0 else 'neg' }}">
+        {{ "%+.1f"|format(t.get('momentum_pct', 0)) }}%
+      </td>
+      <td class="{{ 'pos' if t.get('pnl', 0) >= 0 else 'neg' }}">
+        {% if t.get('pnl') %}{{ "{:+,.0f}".format(t['pnl']) }}{% else %}—{% endif %}
+      </td>
+      <td class="{{ 'pos' if t.get('equity_after', 0) > hlset.get('initial', 10000) else 'grey' }}" style="font-weight:600;">
+        ${{ "{:,.0f}".format(t.get('equity_after', 0)) }}
+      </td>
+      <td class="{{ 'pos' if ret_pct >= 0 else 'neg' }}">
+        {{ "{:+,.0f}".format(ret_pct) }}%
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    No HL backtest data found.<br>
+    Run: <code style="color:#bc8cff;">python backtest_hl_momentum.py --export</code>
+  </div>
+  {% endif %}
+
+  <div class="updated">
+    Backtest: {{ hlset.get('start','') }} &rarr; {{ hlset.get('end','') }}
+    &nbsp;&mdash;&nbsp; Weekly rebalancing, {{ hlset.get('trend_ma', 200) }}d MA, LONG bull / SHORT bear
+  </div>
+</div>
+
 <script>
 function switchTab(name, el) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -576,11 +1204,16 @@ def dashboard():
     m5_state, m5_stats, m5_trades = get_5m_data()
     hr_state, hr_stats, hr_trades = get_hourly_data()
     hl_state, hl_stats, hl_trades = get_hl_data()
+    bt_data      = get_backtest_data()
+    hl_bt_data   = get_hl_backtest_data()
+    hl_live_data = get_hl_live()
+    ml_data      = get_momentum_live()
     return render_template_string(
         DASHBOARD_HTML,
         m5_state=m5_state, m5_stats=m5_stats, m5_trades=m5_trades,
         hr_state=hr_state, hr_stats=hr_stats, hr_trades=hr_trades,
         hl_state=hl_state, hl_stats=hl_stats, hl_trades=hl_trades,
+        bt_data=bt_data, hl_bt_data=hl_bt_data, hl_live_data=hl_live_data, ml_data=ml_data,
         fmt_time=fmt_time, fmt_move=fmt_move,
     )
 
@@ -601,6 +1234,21 @@ def api_hourly():
 def api_hl():
     state, stats, trades = get_hl_data()
     return jsonify({"state": state, "stats": stats, "trades": trades})
+
+
+@app.route("/api/backtest")
+def api_backtest():
+    return jsonify(get_backtest_data())
+
+
+@app.route("/api/momentum")
+def api_momentum():
+    return jsonify(get_momentum_live())
+
+
+@app.route("/api/hl-backtest")
+def api_hl_backtest():
+    return jsonify(get_hl_backtest_data())
 
 
 @app.route("/health")

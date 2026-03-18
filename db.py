@@ -192,6 +192,115 @@ def get_trades(limit=100):
         return []
 
 
+def init_backtest_table():
+    """Create backtest_trades table if it doesn't exist."""
+    if not DATABASE_URL:
+        return False
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_trades (
+                id          SERIAL PRIMARY KEY,
+                strategy    VARCHAR(50)  NOT NULL,
+                date        VARCHAR(20)  NOT NULL,
+                action      VARCHAR(10)  NOT NULL,
+                ticker      VARCHAR(20)  NOT NULL,
+                name        VARCHAR(50),
+                direction   VARCHAR(10),
+                entry_price DOUBLE PRECISION,
+                momentum_pct DOUBLE PRECISION,
+                equity_after DOUBLE PRECISION,
+                pnl         DOUBLE PRECISION,
+                funding_cost DOUBLE PRECISION,
+                fee_cost    DOUBLE PRECISION,
+                days_held   INTEGER,
+                created_at  TIMESTAMP DEFAULT NOW()
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        log.error("init_backtest_table_failed", error=str(e))
+        return False
+
+
+def save_backtest_trades(strategy, trades):
+    """Upsert backtest trades for a given strategy (clears old then inserts)."""
+    if not DATABASE_URL:
+        return False
+    try:
+        init_backtest_table()
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM backtest_trades WHERE strategy = %s", (strategy,))
+        for t in trades:
+            cur.execute("""
+                INSERT INTO backtest_trades
+                    (strategy, date, action, ticker, name, direction,
+                     entry_price, momentum_pct, equity_after, pnl,
+                     funding_cost, fee_cost, days_held)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                strategy,
+                t.get("date"), t.get("action", "BUY"), t.get("ticker"),
+                t.get("name"), t.get("direction", "LONG"),
+                t.get("entry_price") or t.get("price"),
+                t.get("momentum_pct"), t.get("equity_after"),
+                t.get("pnl", 0), t.get("funding_cost", 0),
+                t.get("fee_cost", 0), t.get("days_held", 7),
+            ))
+        conn.commit()
+        cur.close()
+        conn.close()
+        log.info("backtest_trades_saved", strategy=strategy, count=len(trades))
+        return True
+    except Exception as e:
+        log.error("save_backtest_trades_failed", error=str(e))
+        return False
+
+
+def get_backtest_trades(strategy=None, limit=500):
+    """Fetch backtest trades, optionally filtered by strategy."""
+    if not DATABASE_URL:
+        return []
+    try:
+        init_backtest_table()
+        conn = get_connection()
+        cur = conn.cursor()
+        if strategy:
+            cur.execute("""
+                SELECT strategy, date, action, ticker, name, direction,
+                       entry_price, momentum_pct, equity_after, pnl,
+                       funding_cost, fee_cost, days_held
+                FROM backtest_trades WHERE strategy = %s
+                ORDER BY date ASC LIMIT %s
+            """, (strategy, limit))
+        else:
+            cur.execute("""
+                SELECT strategy, date, action, ticker, name, direction,
+                       entry_price, momentum_pct, equity_after, pnl,
+                       funding_cost, fee_cost, days_held
+                FROM backtest_trades
+                ORDER BY strategy, date ASC LIMIT %s
+            """, (limit,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            {"strategy": r[0], "date": r[1], "action": r[2], "ticker": r[3],
+             "name": r[4], "direction": r[5], "entry_price": r[6],
+             "momentum_pct": r[7], "equity_after": r[8], "pnl": r[9],
+             "funding_cost": r[10], "fee_cost": r[11], "days_held": r[12]}
+            for r in rows
+        ]
+    except Exception as e:
+        log.error("get_backtest_trades_failed", error=str(e))
+        return []
+
+
 def get_stats():
     """Get aggregate trading statistics."""
     if not DATABASE_URL:
