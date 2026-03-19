@@ -243,7 +243,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .page-subtitle { color: #484f58; font-size: 0.85em; margin-bottom: 28px; }
 
     /* Tabs */
-    .tabs { display: flex; gap: 4px; margin-bottom: 24px; border-bottom: 1px solid #21262d; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 24px; border-bottom: 1px solid #21262d; }
     .tab {
       padding: 10px 20px; cursor: pointer; border-radius: 6px 6px 0 0;
       font-size: 0.9em; font-weight: 600; color: #8b949e;
