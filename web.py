@@ -23,6 +23,7 @@ TRADES_FILE_BACKTEST= "trades/backtest_crypto_trades.json"
 TRADES_FILE_HL_BT   = "trades/hl_momentum_backtest.json"
 TRADES_FILE_HL_LIVE = "trades/hl_momentum_live.json"
 TRADES_FILE_MOMENTUM= "trades/crypto_momentum_live.json"
+TRADES_FILE_SCALPER = "trades/scalper_live.json"
 
 
 # ── Data helpers ─────────────────────────────────────────────────────────────
@@ -182,6 +183,24 @@ def get_momentum_live():
         return empty
 
 
+def get_scalper_live() -> dict:
+    """Load scalper bot live paper trading state from JSON."""
+    empty = {
+        "equity": 0, "capital": 25000, "leverage": 5,
+        "position": None, "trades": [], "total_pnl": 0,
+        "total_fees": 0, "peak_equity": 25000, "max_dd_pct": 0,
+        "status": "flat", "last_check": None, "unrealized_pnl": 0,
+        "current_price": None,
+    }
+    if not os.path.exists(TRADES_FILE_SCALPER):
+        return empty
+    try:
+        with open(TRADES_FILE_SCALPER) as f:
+            return json.load(f)
+    except Exception:
+        return empty
+
+
 def fmt_time(ts):
     if not ts:
         return "—"
@@ -261,6 +280,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .pos  { color: #3fb950; }
     .neg  { color: #f85149; }
     .blue { color: #58a6ff; }
+
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
     .grey { color: #8b949e; }
 
     /* Table */
@@ -321,6 +342,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="tab" onclick="switchTab('hlbacktest', this)">
     HL Perps <span class="tab-badge" style="background:#1f1a2e;color:#bc8cff;">HIST</span>
+  </div>
+  <div class="tab" onclick="switchTab('scalper', this)">
+    BTC Scalper <span class="tab-badge badge-paper">PAPER</span>
   </div>
 </div>
 
@@ -1112,6 +1136,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <thead>
       <tr>
         <th>#</th>
+        <th>Status</th>
         <th>Date</th>
         <th>Dir</th>
         <th>Asset</th>
@@ -1127,8 +1152,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <tbody>
     {% for t in hl_trades %}
     {% set ret_pct = ((t.get('equity_after', 0) - hlset.get('initial', 10000)) / hlset.get('initial', 10000) * 100) if hlset.get('initial', 10000) > 0 else 0 %}
+    {% set is_open = t.get('exit_price') is none %}
     <tr>
       <td style="color:#484f58;">{{ loop.index }}</td>
+      <td>
+        {% if is_open %}
+          <span class="pill" style="background:#1a2d1a;color:#3fb950;animation:pulse 2s infinite;">● OPEN</span>
+        {% else %}
+          <span class="pill" style="background:#1e1e1e;color:#484f58;">✓ CLOSED</span>
+        {% endif %}
+      </td>
       <td>{{ t.get('date','') }}</td>
       <td>
         {% if t.get('direction') == 'LONG' %}
@@ -1184,6 +1217,136 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ═══ BTC SCALPER PANEL ══════════════════════════════════════════════════ -->
+<div class="panel" id="panel-scalper">
+{% set sc = sc_data %}
+{% set sc_trades = sc.get('trades', []) %}
+{% set sc_equity = sc.get('equity', sc.get('capital', 25000)) %}
+{% set sc_capital = sc.get('capital', 25000) %}
+{% set sc_ret = (sc_equity - sc_capital) / sc_capital * 100 if sc_capital else 0 %}
+{% set sc_n = sc_trades | length %}
+{% set sc_wins = sc_trades | selectattr('pnl_usd', '>', 0) | list | length %}
+{% set sc_wr = (sc_wins / sc_n * 100) if sc_n > 0 else 0 %}
+{% set sc_dd = sc.get('max_dd_pct', 0) * 100 %}
+{% set sc_pnl = sc.get('total_pnl', 0) %}
+{% set sc_pos = sc.get('position') %}
+
+  <!-- Live status bar -->
+  <div style="background:#0f1a0f;border:1px solid #1d4a1d;border-radius:8px;padding:12px 18px;margin-bottom:18px;display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
+    <span style="color:#aaa;font-size:12px;">BTC SCALPER</span>
+    <span style="color:#d4b44a;font-weight:600;">Equity: ${{ "{:,.2f}".format(sc_equity) }}</span>
+    <span style="color:{% if sc_ret >= 0 %}#4fc97e{% else %}#e05252{% endif %};">{{ "{:+.2f}".format(sc_ret) }}%</span>
+    <span style="color:#aaa;">Trades: {{ sc_n }}{% if sc_n %} (WR {{ "{:.0f}".format(sc_wr) }}%){% endif %}</span>
+    <span style="color:#e05252;">MaxDD: -{{ "{:.1f}".format(sc_dd) }}%</span>
+    <span style="color:#aaa;">${{ "{:,.0f}".format(sc_capital) }} &times; {{ sc.get('leverage', 5) }}x leverage</span>
+    {% if sc_pos %}
+      {% set d = sc_pos.get('direction', 0) %}
+      {% set dir_label = 'LONG' if d == 1 else 'SHORT' %}
+      {% set unr = sc.get('unrealized_pnl', 0) %}
+      <span style="color:{% if d == 1 %}#4fc97e{% else %}#e05252{% endif %};font-weight:600;">
+        &#9679; {{ dir_label }} @ {{ "{:,.1f}".format(sc_pos.get('entry_price', 0)) }}
+        &nbsp;SL={{ "{:,.1f}".format(sc_pos.get('stop', 0)) }}
+        &nbsp;TP={{ "{:,.1f}".format(sc_pos.get('target', 0)) }}
+        &nbsp;UnrPnL=${{ "{:+.0f}".format(unr) }}
+      </span>
+    {% else %}
+      <span style="color:#777;">&#9675; FLAT — waiting for EMA pullback signal</span>
+    {% endif %}
+    <span style="color:#555;font-size:11px;margin-left:auto;">{{ sc.get('last_check', '')[:19] }} UTC</span>
+  </div>
+
+  <!-- Strategy info cards -->
+  <div class="cards">
+    <div class="card">
+      <div class="lbl">Strategy</div>
+      <div class="val" style="font-size:13px;">Pullback to EMA</div>
+      <div style="color:#777;font-size:11px;margin-top:4px;">EMA21/100 + RSI14</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Signal Logic</div>
+      <div class="val" style="font-size:11px;line-height:1.6;">
+        Long: price &le; EMA21, RSI cross &uarr;45<br>
+        Short: price &ge; EMA21, RSI cross &darr;55
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">Risk / Reward</div>
+      <div class="val">1 : 3.0</div>
+      <div style="color:#777;font-size:11px;margin-top:4px;">SL = swing &#177;0.1&times;ATR</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Backtest Edge</div>
+      <div class="val" style="color:#4fc97e;">${{ "{:,.0f}".format(sc_capital * sc.get('leverage', 5) / 30000 * 100) }}/day avg</div>
+      <div style="color:#777;font-size:11px;margin-top:4px;">37.4% WR, -12% MaxDD</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Total P&amp;L</div>
+      <div class="val" style="color:{% if sc_pnl >= 0 %}#4fc97e{% else %}#e05252{% endif %};">${{ "{:+,.2f}".format(sc_pnl) }}</div>
+    </div>
+  </div>
+
+  <!-- Trade log -->
+  {% if sc_trades %}
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Dir</th>
+        <th>Entry Time</th>
+        <th>Exit Time</th>
+        <th>Entry</th>
+        <th>Exit</th>
+        <th>Reason</th>
+        <th>Bars</th>
+        <th>P&amp;L $</th>
+        <th>Equity</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in sc_trades | reverse %}
+      <tr class="{% if t.pnl_usd > 0 %}win{% else %}lose{% endif %}">
+        <td><span style="color:#4fc97e;font-size:11px;">&#10003; CLOSED</span></td>
+        <td style="color:{% if t.direction == 'long' %}#4fc97e{% else %}#e05252{% endif %};">{{ t.direction | upper }}</td>
+        <td>{{ t.entry_time[:16] }}</td>
+        <td>{{ t.exit_time[:16] }}</td>
+        <td>${{ "{:,.1f}".format(t.entry_price) }}</td>
+        <td>${{ "{:,.1f}".format(t.exit_price) }}</td>
+        <td style="color:{% if t.exit_reason == 'TP' %}#4fc97e{% elif t.exit_reason == 'SL' %}#e05252{% else %}#d4b44a{% endif %};">{{ t.exit_reason }}</td>
+        <td>{{ t.get('bars_held', '—') }}</td>
+        <td style="color:{% if t.pnl_usd > 0 %}#4fc97e{% else %}#e05252{% endif %};">${{ "{:+,.2f}".format(t.pnl_usd) }}</td>
+        <td>${{ "{:,.2f}".format(t.get('equity_after', 0)) }}</td>
+      </tr>
+      {% endfor %}
+      {% if sc_pos %}
+      <tr style="opacity:0.7;">
+        <td><span style="color:#d4b44a;font-size:11px;animation:pulse 1.5s infinite;">&#9679; OPEN</span></td>
+        <td style="color:{% if sc_pos.direction == 1 %}#4fc97e{% else %}#e05252{% endif %};">{{ 'LONG' if sc_pos.direction == 1 else 'SHORT' }}</td>
+        <td>{{ sc_pos.entry_time[:16] }}</td>
+        <td>—</td>
+        <td>${{ "{:,.1f}".format(sc_pos.entry_price) }}</td>
+        <td>{{ "{:,.1f}".format(sc.get('current_price', 0)) }}</td>
+        <td>—</td>
+        <td>—</td>
+        <td style="color:{% if sc.get('unrealized_pnl', 0) >= 0 %}#4fc97e{% else %}#e05252{% endif %};">${{ "{:+,.2f}".format(sc.get('unrealized_pnl', 0)) }}</td>
+        <td>${{ "{:,.2f}".format(sc_equity) }}</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    No scalper trades yet.<br>
+    Run: <code style="color:#4fc97e;">python scalper_bot.py --daemon --capital 25000 --leverage 5</code>
+  </div>
+  {% endif %}
+
+  <div class="updated">
+    Strategy: Pullback to EMA (EMA21/100, RSI14, ATR14) &mdash;
+    TP 3R, SL swing&#177;0.1&times;ATR, Timeout 30 bars (2.5h) &mdash;
+    Fee: +0.02% maker entry, -0.05% taker exit
+  </div>
+</div>
+
 <script>
 function switchTab(name, el) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1208,12 +1371,14 @@ def dashboard():
     hl_bt_data   = get_hl_backtest_data()
     hl_live_data = get_hl_live()
     ml_data      = get_momentum_live()
+    sc_data      = get_scalper_live()
     return render_template_string(
         DASHBOARD_HTML,
         m5_state=m5_state, m5_stats=m5_stats, m5_trades=m5_trades,
         hr_state=hr_state, hr_stats=hr_stats, hr_trades=hr_trades,
         hl_state=hl_state, hl_stats=hl_stats, hl_trades=hl_trades,
-        bt_data=bt_data, hl_bt_data=hl_bt_data, hl_live_data=hl_live_data, ml_data=ml_data,
+        bt_data=bt_data, hl_bt_data=hl_bt_data, hl_live_data=hl_live_data,
+        ml_data=ml_data, sc_data=sc_data,
         fmt_time=fmt_time, fmt_move=fmt_move,
     )
 
@@ -1249,6 +1414,11 @@ def api_momentum():
 @app.route("/api/hl-backtest")
 def api_hl_backtest():
     return jsonify(get_hl_backtest_data())
+
+
+@app.route("/api/scalper")
+def api_scalper():
+    return jsonify(get_scalper_live())
 
 
 @app.route("/health")
