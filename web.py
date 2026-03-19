@@ -184,14 +184,21 @@ def get_momentum_live():
 
 
 def get_scalper_live() -> dict:
-    """Load scalper bot live paper trading state from JSON."""
+    """Load scalper bot state — DB first, JSON fallback."""
     empty = {
-        "equity": 0, "capital": 25000, "leverage": 5,
+        "equity": 25000, "capital": 25000, "leverage": 5,
         "position": None, "trades": [], "total_pnl": 0,
         "total_fees": 0, "peak_equity": 25000, "max_dd_pct": 0,
         "status": "flat", "last_check": None, "unrealized_pnl": 0,
         "current_price": None,
     }
+    try:
+        import db as _db
+        db_state = _db.get_scalper_state()
+        if db_state is not None:
+            return db_state
+    except Exception:
+        pass
     if not os.path.exists(TRADES_FILE_SCALPER):
         return empty
     try:

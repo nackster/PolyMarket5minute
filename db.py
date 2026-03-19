@@ -301,6 +301,239 @@ def get_backtest_trades(strategy=None, limit=500):
         return []
 
 
+# ── Scalper bot persistence ───────────────────────────────────────────────────
+
+def init_scalper_tables():
+    """Create scalper_state and scalper_trades tables if they don't exist."""
+    if not DATABASE_URL:
+        return False
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS scalper_state (
+                id              INTEGER PRIMARY KEY DEFAULT 1,
+                equity          DOUBLE PRECISION NOT NULL DEFAULT 25000,
+                capital         DOUBLE PRECISION NOT NULL DEFAULT 25000,
+                leverage        DOUBLE PRECISION NOT NULL DEFAULT 5,
+                total_pnl       DOUBLE PRECISION NOT NULL DEFAULT 0,
+                total_fees      DOUBLE PRECISION NOT NULL DEFAULT 0,
+                peak_equity     DOUBLE PRECISION NOT NULL DEFAULT 25000,
+                max_dd_pct      DOUBLE PRECISION NOT NULL DEFAULT 0,
+                status          VARCHAR(10) NOT NULL DEFAULT 'flat',
+                last_check      TIMESTAMP WITH TIME ZONE,
+                unrealized_pnl  DOUBLE PRECISION NOT NULL DEFAULT 0,
+                current_price   DOUBLE PRECISION,
+                started_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                position_json   TEXT,
+                CHECK (id = 1)
+            );
+
+            INSERT INTO scalper_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+            CREATE TABLE IF NOT EXISTS scalper_trades (
+                id              SERIAL PRIMARY KEY,
+                entry_time      TIMESTAMP WITH TIME ZONE NOT NULL,
+                exit_time       TIMESTAMP WITH TIME ZONE NOT NULL,
+                direction       VARCHAR(10) NOT NULL,
+                entry_price     DOUBLE PRECISION NOT NULL,
+                exit_price      DOUBLE PRECISION NOT NULL,
+                exit_reason     VARCHAR(10) NOT NULL,
+                pnl_pct         DOUBLE PRECISION NOT NULL,
+                pnl_usd         DOUBLE PRECISION NOT NULL,
+                fees_usd        DOUBLE PRECISION NOT NULL,
+                pos_size        DOUBLE PRECISION NOT NULL,
+                bars_held       INTEGER,
+                equity_after    DOUBLE PRECISION NOT NULL
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        log.error("init_scalper_tables_failed", error=str(e))
+        return False
+
+
+def save_scalper_state(state: dict) -> bool:
+    """Persist the full scalper state to DB."""
+    if not DATABASE_URL:
+        return False
+    import json as _json
+    try:
+        init_scalper_tables()
+        conn = get_connection()
+        cur = conn.cursor()
+        pos_json = _json.dumps(state.get("position")) if state.get("position") else None
+        cur.execute("""
+            UPDATE scalper_state SET
+                equity         = %s,
+                capital        = %s,
+                leverage       = %s,
+                total_pnl      = %s,
+                total_fees     = %s,
+                peak_equity    = %s,
+                max_dd_pct     = %s,
+                status         = %s,
+                last_check     = NOW(),
+                unrealized_pnl = %s,
+                current_price  = %s,
+                position_json  = %s
+            WHERE id = 1
+        """, (
+            state.get("equity", 25000),
+            state.get("capital", 25000),
+            state.get("leverage", 5),
+            state.get("total_pnl", 0),
+            state.get("total_fees", 0),
+            state.get("peak_equity", 25000),
+            state.get("max_dd_pct", 0),
+            state.get("status", "flat"),
+            state.get("unrealized_pnl", 0),
+            state.get("current_price"),
+            pos_json,
+        ))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        log.error("save_scalper_state_failed", error=str(e))
+        return False
+
+
+def append_scalper_trade(trade: dict) -> bool:
+    """Insert one completed scalper trade into DB."""
+    if not DATABASE_URL:
+        return False
+    try:
+        init_scalper_tables()
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO scalper_trades
+                (entry_time, exit_time, direction, entry_price, exit_price,
+                 exit_reason, pnl_pct, pnl_usd, fees_usd, pos_size,
+                 bars_held, equity_after)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            trade.get("entry_time"),
+            trade.get("exit_time"),
+            trade.get("direction"),
+            trade.get("entry_price"),
+            trade.get("exit_price"),
+            trade.get("exit_reason"),
+            trade.get("pnl_pct", 0),
+            trade.get("pnl_usd", 0),
+            trade.get("fees_usd", 0),
+            trade.get("pos_size", 0),
+            trade.get("bars_held"),
+            trade.get("equity_after", 0),
+        ))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        log.error("append_scalper_trade_failed", error=str(e))
+        return False
+
+
+def get_scalper_state() -> dict | None:
+    """Load full scalper state from DB (state + all trades)."""
+    if not DATABASE_URL:
+        return None
+    import json as _json
+    try:
+        init_scalper_tables()
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT equity, capital, leverage, total_pnl, total_fees,
+                   peak_equity, max_dd_pct, status, last_check,
+                   unrealized_pnl, current_price, started_at, position_json
+            FROM scalper_state WHERE id = 1
+        """)
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            return None
+
+        cur.execute("""
+            SELECT entry_time, exit_time, direction, entry_price, exit_price,
+                   exit_reason, pnl_pct, pnl_usd, fees_usd, pos_size,
+                   bars_held, equity_after
+            FROM scalper_trades ORDER BY entry_time ASC
+        """)
+        trade_rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        trades = []
+        for r in trade_rows:
+            trades.append({
+                "entry_time":  r[0].isoformat() if r[0] else None,
+                "exit_time":   r[1].isoformat() if r[1] else None,
+                "direction":   r[2],
+                "entry_price": r[3],
+                "exit_price":  r[4],
+                "exit_reason": r[5],
+                "pnl_pct":     r[6],
+                "pnl_usd":     r[7],
+                "fees_usd":    r[8],
+                "pos_size":    r[9],
+                "bars_held":   r[10],
+                "equity_after": r[11],
+            })
+
+        return {
+            "equity":        row[0],
+            "capital":       row[1],
+            "leverage":      row[2],
+            "total_pnl":     row[3],
+            "total_fees":    row[4],
+            "peak_equity":   row[5],
+            "max_dd_pct":    row[6],
+            "status":        row[7],
+            "last_check":    row[8].isoformat() if row[8] else None,
+            "unrealized_pnl": row[9],
+            "current_price": row[10],
+            "started_at":    row[11].isoformat() if row[11] else None,
+            "position":      _json.loads(row[12]) if row[12] else None,
+            "trades":        trades,
+        }
+    except Exception as e:
+        log.error("get_scalper_state_failed", error=str(e))
+        return None
+
+
+def reset_scalper_state(capital: float = 25000, leverage: float = 5) -> bool:
+    """Wipe trades and reset state to starting values."""
+    if not DATABASE_URL:
+        return False
+    try:
+        init_scalper_tables()
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM scalper_trades")
+        cur.execute("""
+            UPDATE scalper_state SET
+                equity=%(c)s, capital=%(c)s, leverage=%(l)s,
+                total_pnl=0, total_fees=0, peak_equity=%(c)s, max_dd_pct=0,
+                status='flat', last_check=NULL, unrealized_pnl=0,
+                current_price=NULL, started_at=NOW(), position_json=NULL
+            WHERE id=1
+        """, {"c": capital, "l": leverage})
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        log.error("reset_scalper_state_failed", error=str(e))
+        return False
+
+
 def get_stats():
     """Get aggregate trading statistics."""
     if not DATABASE_URL:

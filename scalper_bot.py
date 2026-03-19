@@ -28,6 +28,7 @@ import time
 from datetime import datetime, timezone
 
 import requests
+import db as _db
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -243,6 +244,12 @@ def init_state(capital: float, leverage: float) -> dict:
     }
 
 def load_state(capital: float, leverage: float) -> dict:
+    # Try DB first
+    db_state = _db.get_scalper_state()
+    if db_state is not None:
+        print("[scalper] Loaded state from database.")
+        return db_state
+    # Fallback: local JSON
     os.makedirs("trades", exist_ok=True)
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
@@ -252,9 +259,15 @@ def load_state(capital: float, leverage: float) -> dict:
     return s
 
 def save_state(state: dict):
-    os.makedirs("trades", exist_ok=True)
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+    # Save to DB (primary)
+    _db.save_scalper_state(state)
+    # Also write local JSON (for dashboard fallback when no DB)
+    try:
+        os.makedirs("trades", exist_ok=True)
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Core check — one 5-minute cycle
@@ -352,6 +365,7 @@ def run_check(state: dict, force: bool = False) -> dict:
             state["trades"].append(trade_rec)
             state["position"] = None
             state["status"]   = "flat"
+            _db.append_scalper_trade(trade_rec)
 
             emoji = "✓" if pnl_usd > 0 else "✗"
             print(f"[scalper]  {emoji} CLOSED {'LONG' if d==1 else 'SHORT'} "
@@ -491,9 +505,10 @@ def main():
     args = parser.parse_args()
 
     if args.reset:
+        _db.reset_scalper_state(args.capital, args.leverage)
         if os.path.exists(STATE_FILE):
             os.remove(STATE_FILE)
-            print(f"[scalper] State reset. Starting fresh with ${args.capital:,.0f} × {args.leverage}x")
+        print(f"[scalper] State reset. Starting fresh with ${args.capital:,.0f} x {args.leverage}x")
         state = load_state(args.capital, args.leverage)
     else:
         state = load_state(args.capital, args.leverage)
