@@ -34,7 +34,7 @@ import db as _db
 # Constants
 # ---------------------------------------------------------------------------
 STATE_FILE    = "trades/scalper_live.json"
-SYMBOL        = "BTC"
+SYMBOL        = "ETH"
 INTERVAL      = "5m"
 LOOKBACK_BARS = 300        # enough for EMA100 + 200 warmup
 LOOP_SECONDS  = 300        # 5 min
@@ -278,7 +278,7 @@ def run_check(state: dict, force: bool = False) -> dict:
 
     # --- 1. Fetch candles ---------------------------------------------------
     try:
-        candles = fetch_candles("BTCUSDT", INTERVAL, LOOKBACK_BARS)
+        candles = fetch_candles(f"{SYMBOL}USDT", INTERVAL, LOOKBACK_BARS)
     except Exception as e:
         print(f"[scalper] fetch error: {e}")
         save_state(state)
@@ -288,7 +288,7 @@ def run_check(state: dict, force: bool = False) -> dict:
     last_close = last_bar["c"]
     last_bar_time = datetime.utcfromtimestamp(last_bar["t"]).strftime("%Y-%m-%d %H:%M")
 
-    print(f"[scalper] {_now_iso()[:19]}Z  BTC={last_close:,.1f}  bar={last_bar_time}")
+    print(f"[scalper] {_now_iso()[:19]}Z  {SYMBOL}={last_close:,.2f}  bar={last_bar_time}")
 
     # --- 2. Check open position ---------------------------------------------
     pos = state.get("position")
@@ -462,7 +462,7 @@ def show_status(state: dict):
     pos       = state.get("position")
 
     print("=" * 55)
-    print("  BTC Scalper Bot — Paper Trading Status")
+    print(f"  {SYMBOL} Scalper Bot — Paper Trading Status")
     print("=" * 55)
     print(f"  Equity:    ${equity:,.2f}  ({ret_pct:+.2f}%)")
     print(f"  Total P&L: ${pnl:+,.2f}")

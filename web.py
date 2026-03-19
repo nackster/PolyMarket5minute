@@ -351,7 +351,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     HL Perps <span class="tab-badge" style="background:#1f1a2e;color:#bc8cff;">HIST</span>
   </div>
   <div class="tab" onclick="switchTab('scalper', this)">
-    BTC Scalper <span class="tab-badge badge-paper">PAPER</span>
+    ETH Scalper <span class="tab-badge badge-paper">PAPER</span>
   </div>
 </div>
 
@@ -1224,7 +1224,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- ═══ BTC SCALPER PANEL ══════════════════════════════════════════════════ -->
+<!-- ═══ ETH SCALPER PANEL ══════════════════════════════════════════════════ -->
 <div class="panel" id="panel-scalper">
 {% set sc = sc_data %}
 {% set sc_trades = sc.get('trades', []) %}
@@ -1240,7 +1240,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   <!-- Live status bar -->
   <div style="background:#0f1a0f;border:1px solid #1d4a1d;border-radius:8px;padding:12px 18px;margin-bottom:18px;display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
-    <span style="color:#aaa;font-size:12px;">BTC SCALPER</span>
+    <span style="color:#aaa;font-size:12px;">ETH SCALPER</span>
     <span style="color:#d4b44a;font-weight:600;">Equity: ${{ "{:,.2f}".format(sc_equity) }}</span>
     <span style="color:{% if sc_ret >= 0 %}#4fc97e{% else %}#e05252{% endif %};">{{ "{:+.2f}".format(sc_ret) }}%</span>
     <span style="color:#aaa;">Trades: {{ sc_n }}{% if sc_n %} (WR {{ "{:.0f}".format(sc_wr) }}%){% endif %}</span>
@@ -1283,8 +1283,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="card">
       <div class="lbl">Backtest Edge</div>
-      <div class="val" style="color:#4fc97e;">${{ "{:,.0f}".format(sc_capital * sc.get('leverage', 5) / 30000 * 100) }}/day avg</div>
-      <div style="color:#777;font-size:11px;margin-top:4px;">37.4% WR, -12% MaxDD</div>
+      <div class="val" style="color:#4fc97e;">$647/day avg</div>
+      <div style="color:#777;font-size:11px;margin-top:4px;">37.1% WR, -21% MaxDD</div>
     </div>
     <div class="card">
       <div class="lbl">Total P&amp;L</div>
