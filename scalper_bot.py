@@ -1,11 +1,11 @@
 """
-scalper_bot.py — Live paper trading bot for BTC intraday scalping on Hyperliquid.
+scalper_bot.py -- Live paper trading bot for BTC intraday scalping on Hyperliquid.
 
 Strategy: Pullback to EMA (best from backtest sweep)
   - Long: BTC above EMA100 (uptrend), price pulls back to EMA21, RSI crosses above 45
   - Short: BTC below EMA100 (downtrend), price pops to EMA21, RSI crosses below 55
   - SL: swing low/high - 0.1 ATR
-  - TP: entry + 3.0 × risk
+  - TP: entry + 3.0 x risk
   - Timeout: 30 candles (2.5 hours)
 
 Simulated fills at next candle open. Taker fee 0.05% on exits, maker rebate 0.02% on entries.
@@ -61,17 +61,49 @@ DEFAULT_LEVERAGE = 3.0
 _stop = False
 def _handle_sigterm(signum, frame):
     global _stop
-    print("\n[scalper] SIGTERM received, shutting down cleanly…")
+    print("\n[scalper] SIGTERM received, shutting down cleanly...")
     _stop = True
 signal.signal(signal.SIGTERM, _handle_sigterm)
 signal.signal(signal.SIGINT,  _handle_sigterm)
 
 # ---------------------------------------------------------------------------
-# Market data — Binance 5m OHLCV (free, no key required, matches Hyperliquid)
+# Market data -- Hyperliquid candle API (primary, no geo-blocking)
 # ---------------------------------------------------------------------------
-def fetch_candles(symbol: str = "BTCUSDT", interval: str = "5m",
+def fetch_candles(symbol: str = "ETHUSDT", interval: str = "5m",
                   limit: int = LOOKBACK_BARS) -> list:
-    """Returns list of {t, o, h, l, c} dicts, oldest first."""
+    """Returns list of {t, o, h, l, c} dicts, oldest first.
+    Uses Hyperliquid as primary source (works from US/Heroku).
+    Falls back to Binance if Hyperliquid fails.
+    """
+    coin = symbol.replace("USDT", "")  # "ETHUSDT" -> "ETH"
+    try:
+        now_ms   = int(time.time() * 1000)
+        start_ms = now_ms - limit * 5 * 60 * 1000  # 5m bars back
+        resp = requests.post(
+            "https://api.hyperliquid.xyz/info",
+            headers={"Content-Type": "application/json"},
+            json={"type": "candleSnapshot", "req": {
+                "coin": coin, "interval": interval,
+                "startTime": start_ms, "endTime": now_ms,
+            }},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        candles = []
+        for k in resp.json():
+            candles.append({
+                "t": int(k["t"]) // 1000,
+                "o": float(k["o"]),
+                "h": float(k["h"]),
+                "l": float(k["l"]),
+                "c": float(k["c"]),
+            })
+        if candles:
+            return sorted(candles, key=lambda x: x["t"])
+    except Exception as e:
+        print(f"[scalper] Hyperliquid fetch failed ({e}), trying Binance...")
+
+    # Binance fallback (may be geo-blocked on Heroku US)
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     resp = requests.get(url, params=params, timeout=15)
@@ -79,7 +111,7 @@ def fetch_candles(symbol: str = "BTCUSDT", interval: str = "5m",
     candles = []
     for k in resp.json():
         candles.append({
-            "t": int(k[0]) // 1000,   # Unix seconds
+            "t": int(k[0]) // 1000,
             "o": float(k[1]),
             "h": float(k[2]),
             "l": float(k[3]),
@@ -135,7 +167,7 @@ def _atr(highs, lows, closes, period: int = 14) -> list:
     return out
 
 # ---------------------------------------------------------------------------
-# Signal generation — identical logic to backtest_scalper.py signals_pullback
+# Signal generation -- identical logic to backtest_scalper.py signals_pullback
 # ---------------------------------------------------------------------------
 def compute_signal(candles: list) -> dict:
     """
@@ -270,7 +302,7 @@ def save_state(state: dict):
         pass
 
 # ---------------------------------------------------------------------------
-# Core check — one 5-minute cycle
+# Core check -- one 5-minute cycle
 # ---------------------------------------------------------------------------
 def run_check(state: dict, force: bool = False) -> dict:
     now_ts = int(time.time())
@@ -367,7 +399,7 @@ def run_check(state: dict, force: bool = False) -> dict:
             state["status"]   = "flat"
             _db.append_scalper_trade(trade_rec)
 
-            emoji = "✓" if pnl_usd > 0 else "✗"
+            emoji = "WIN" if pnl_usd > 0 else "LOSE"
             print(f"[scalper]  {emoji} CLOSED {'LONG' if d==1 else 'SHORT'} "
                   f"entry={entry_px:.1f} exit={exit_price:.1f} "
                   f"reason={exit_reason} PnL=${pnl_usd:.2f} "
@@ -402,12 +434,12 @@ def run_check(state: dict, force: bool = False) -> dict:
 
             risk      = abs(entry_px - sig["stop"])
             reward    = abs(sig["target"] - entry_px)
-            print(f"[scalper]  → OPEN {dir_label} @ {entry_px:.1f}  "
+            print(f"[scalper]  >> OPEN {dir_label} @ {entry_px:.1f}  "
                   f"SL={sig['stop']:.1f}  TP={sig['target']:.1f}  "
                   f"R:R=1:{TP_RR}  Risk=${risk/entry_px*pos_size:.0f}  "
                   f"RSI={sig['rsi']:.1f}")
         else:
-            print(f"[scalper]  — No signal. Status: flat.")
+            print(f"[scalper]  -- No signal. Status: flat.")
 
     # --- 4. Mark-to-market unrealized PnL for display ----------------------
     pos = state.get("position")
@@ -429,10 +461,28 @@ def run_check(state: dict, force: bool = False) -> dict:
 # ---------------------------------------------------------------------------
 # Daemon loop
 # ---------------------------------------------------------------------------
+_last_ping = 0
+
+def _ping_web():
+    """Ping our own web dyno every 25 min to prevent Eco dyno idling."""
+    global _last_ping
+    app_url = os.getenv("APP_URL", "")
+    if not app_url:
+        return
+    if time.time() - _last_ping < 1500:  # 25 minutes
+        return
+    try:
+        requests.get(f"{app_url}/health", timeout=10)
+        _last_ping = time.time()
+        print("[scalper] Pinged web dyno to prevent idle sleep.")
+    except Exception:
+        pass
+
 def run_daemon(state: dict):
-    print(f"[scalper] Starting daemon — checking every {LOOP_SECONDS}s")
+    print(f"[scalper] Starting daemon -- checking every {LOOP_SECONDS}s")
     while not _stop:
         state = run_check(state)
+        _ping_web()
         if _stop:
             break
         # Sleep until next 5-min bar boundary (aligned to clock)
@@ -440,7 +490,7 @@ def run_daemon(state: dict):
         wait = LOOP_SECONDS - (now % LOOP_SECONDS)
         if wait < 10:
             wait += LOOP_SECONDS
-        print(f"[scalper] Sleeping {wait:.0f}s until next bar…")
+        print(f"[scalper] Sleeping {wait:.0f}s until next bar...")
         for _ in range(int(wait)):
             if _stop:
                 break
@@ -462,13 +512,13 @@ def show_status(state: dict):
     pos       = state.get("position")
 
     print("=" * 55)
-    print(f"  {SYMBOL} Scalper Bot — Paper Trading Status")
+    print(f"  {SYMBOL} Scalper Bot -- Paper Trading Status")
     print("=" * 55)
     print(f"  Equity:    ${equity:,.2f}  ({ret_pct:+.2f}%)")
     print(f"  Total P&L: ${pnl:+,.2f}")
     print(f"  Trades:    {n_trades}  (WR {wr:.1f}%)")
     print(f"  Max DD:    -{dd:.1f}%")
-    print(f"  Capital:   ${capital:,.0f}  ×{state['leverage']}x leverage")
+    print(f"  Capital:   ${capital:,.0f}  x{state['leverage']}x leverage")
     print(f"  Last chk:  {state.get('last_check','never')[:19]}")
 
     if pos:
@@ -481,12 +531,12 @@ def show_status(state: dict):
               f"SL={pos['stop']:.1f}  TP={pos['target']:.1f}")
         print(f"    Current={cp:.1f} ({pct_move:+.2f}%)  UnrPnL=${unr:+.2f}")
     else:
-        print("\n  Status: FLAT — waiting for signal")
+        print("\n  Status: FLAT -- waiting for signal")
 
     if n_trades:
         print("\n  Last 5 trades:")
         for t in state["trades"][-5:]:
-            e = "✓" if t["pnl_usd"] > 0 else "✗"
+            e = "WIN" if t["pnl_usd"] > 0 else "LOSE"
             print(f"    {e} {t['direction']:<5} {t['exit_reason']:<8} "
                   f"${t['pnl_usd']:+.2f}  ({t['entry_time'][:16]})")
     print("=" * 55)
