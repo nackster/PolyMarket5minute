@@ -67,57 +67,38 @@ signal.signal(signal.SIGTERM, _handle_sigterm)
 signal.signal(signal.SIGINT,  _handle_sigterm)
 
 # ---------------------------------------------------------------------------
-# Market data -- Hyperliquid candle API (primary, no geo-blocking)
+# Market data -- Hyperliquid candle API (no US geo-blocking, Binance removed)
 # ---------------------------------------------------------------------------
 def fetch_candles(symbol: str = "ETHUSDT", interval: str = "5m",
                   limit: int = LOOKBACK_BARS) -> list:
     """Returns list of {t, o, h, l, c} dicts, oldest first.
-    Uses Hyperliquid as primary source (works from US/Heroku).
-    Falls back to Binance if Hyperliquid fails.
+    Uses Hyperliquid candle API (no US geo-blocking).
     """
     coin = symbol.replace("USDT", "")  # "ETHUSDT" -> "ETH"
-    try:
-        now_ms   = int(time.time() * 1000)
-        start_ms = now_ms - limit * 5 * 60 * 1000  # 5m bars back
-        resp = requests.post(
-            "https://api.hyperliquid.xyz/info",
-            headers={"Content-Type": "application/json"},
-            json={"type": "candleSnapshot", "req": {
-                "coin": coin, "interval": interval,
-                "startTime": start_ms, "endTime": now_ms,
-            }},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        candles = []
-        for k in resp.json():
-            candles.append({
-                "t": int(k["t"]) // 1000,
-                "o": float(k["o"]),
-                "h": float(k["h"]),
-                "l": float(k["l"]),
-                "c": float(k["c"]),
-            })
-        if candles:
-            return sorted(candles, key=lambda x: x["t"])
-    except Exception as e:
-        print(f"[scalper] Hyperliquid fetch failed ({e}), trying Binance...")
-
-    # Binance fallback (may be geo-blocked on Heroku US)
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    resp = requests.get(url, params=params, timeout=15)
+    now_ms   = int(time.time() * 1000)
+    start_ms = now_ms - limit * 5 * 60 * 1000  # 5m bars back
+    resp = requests.post(
+        "https://api.hyperliquid.xyz/info",
+        headers={"Content-Type": "application/json"},
+        json={"type": "candleSnapshot", "req": {
+            "coin": coin, "interval": interval,
+            "startTime": start_ms, "endTime": now_ms,
+        }},
+        timeout=15,
+    )
     resp.raise_for_status()
     candles = []
     for k in resp.json():
         candles.append({
-            "t": int(k[0]) // 1000,
-            "o": float(k[1]),
-            "h": float(k[2]),
-            "l": float(k[3]),
-            "c": float(k[4]),
+            "t": int(k["t"]) // 1000,
+            "o": float(k["o"]),
+            "h": float(k["h"]),
+            "l": float(k["l"]),
+            "c": float(k["c"]),
         })
-    return candles
+    if not candles:
+        raise ValueError("Hyperliquid returned empty candle data")
+    return sorted(candles, key=lambda x: x["t"])
 
 # ---------------------------------------------------------------------------
 # Technical indicators (pure Python, no deps beyond stdlib)
