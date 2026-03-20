@@ -1,12 +1,13 @@
 """
-scalper_bot.py -- Live paper trading bot for BTC intraday scalping on Hyperliquid.
+scalper_bot.py -- Live paper trading bot for ETH intraday scalping on Hyperliquid.
 
-Strategy: Pullback to EMA (best from backtest sweep)
-  - Long: BTC above EMA100 (uptrend), price pulls back to EMA21, RSI crosses above 45
-  - Short: BTC below EMA100 (downtrend), price pops to EMA21, RSI crosses below 55
-  - SL: swing low/high - 0.1 ATR
+Strategy: MACD Momentum (best from v2 backtest sweep, $820/day OOS)
+  - Long:  MACD histogram crosses above 0 AND price > EMA50
+  - Short: MACD histogram crosses below 0 AND price < EMA50
+  - SL: swing low/high (5-bar) - 0.1 ATR
   - TP: entry + 3.0 x risk
   - Timeout: 30 candles (2.5 hours)
+  - Cooldown: 2 bars after any close before re-entry
 
 Simulated fills at next candle open. Taker fee 0.05% on exits, maker rebate 0.02% on entries.
 
@@ -39,14 +40,15 @@ INTERVAL      = "5m"
 LOOKBACK_BARS = 300        # enough for EMA100 + 200 warmup
 LOOP_SECONDS  = 300        # 5 min
 
-# Strategy params (best from sweep: $100/day on $10k 3x, MaxDD 12.2%)
-FAST_EMA_P    = 21
-TREND_EMA_P   = 100
-RSI_PERIOD    = 14
+# Strategy params (MACD Momentum -- $820/day OOS on 17.5d ETH 5m backtest)
+MACD_FAST     = 12
+MACD_SLOW     = 26
+MACD_SIGNAL   = 9
+TREND_EMA_P   = 50
 ATR_PERIOD    = 14
-RSI_ENTRY     = 45.0       # long crosses above, short crosses below 55
 TP_RR         = 3.0        # reward:risk ratio
 MAX_HOLD      = 30         # bars before timeout
+COOLDOWN_BARS = 2          # bars to wait after any close before re-entry
 
 # Fees
 TAKER_FEE     = 0.0005     # 0.05%
@@ -118,22 +120,20 @@ def _ema(values: list, period: int) -> list:
             out[i] = seed
     return out
 
-def _rsi(closes: list, period: int = 14) -> list:
-    out = [float("nan")] * len(closes)
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i - 1]
-        gains.append(max(diff, 0.0))
-        losses.append(max(-diff, 0.0))
-        if i >= period:
-            ag = sum(gains[-period:]) / period
-            al = sum(losses[-period:]) / period
-            if al == 0:
-                out[i] = 100.0
-            else:
-                rs = ag / al
-                out[i] = 100.0 - 100.0 / (1 + rs)
-    return out
+def _macd(closes: list, fast: int, slow: int, sig: int):
+    """Returns (macd_line, signal_line, histogram) as parallel lists."""
+    fast_e = _ema(closes, fast)
+    slow_e = _ema(closes, slow)
+    macd_line = [
+        f - s if not (math.isnan(f) or math.isnan(s)) else float("nan")
+        for f, s in zip(fast_e, slow_e)
+    ]
+    signal_line = _ema(macd_line, sig)
+    histogram = [
+        m - s if not (math.isnan(m) or math.isnan(s)) else float("nan")
+        for m, s in zip(macd_line, signal_line)
+    ]
+    return macd_line, signal_line, histogram
 
 def _atr(highs, lows, closes, period: int = 14) -> list:
     out = [float("nan")] * len(closes)
@@ -148,89 +148,74 @@ def _atr(highs, lows, closes, period: int = 14) -> list:
     return out
 
 # ---------------------------------------------------------------------------
-# Signal generation -- identical logic to backtest_scalper.py signals_pullback
+# Signal generation -- MACD Momentum (matches backtest_v2.py MACD_Momentum)
 # ---------------------------------------------------------------------------
-def compute_signal(candles: list) -> dict:
+def compute_signal(candles: list, last_close_bar_ts: int = 0) -> dict:
     """
-    Returns signal dict:
-      { "direction": 1|-1, "stop": float, "target": float, "entry_bar_idx": int }
-    or None if no signal on latest completed bar.
-
-    We only look at the LAST completed bar (index -2, since -1 is the live bar).
+    Returns signal dict or None.
+    Only signals on the last completed bar (index -2). No multi-bar lookback.
+    Enforces COOLDOWN_BARS wait after any trade close.
     """
     closes = [c["c"] for c in candles]
     highs  = [c["h"] for c in candles]
     lows   = [c["l"] for c in candles]
 
-    fast_e  = _ema(closes, FAST_EMA_P)
-    trend_e = _ema(closes, TREND_EMA_P)
-    rsi_v   = _rsi(closes, RSI_PERIOD)
-    atr_v   = _atr(highs, lows, closes, ATR_PERIOD)
+    _, _, hist  = _macd(closes, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+    trend_e     = _ema(closes, TREND_EMA_P)
+    atr_v       = _atr(highs, lows, closes, ATR_PERIOD)
 
-    # Check last 3 completed bars for a signal (in case we missed one)
-    n = len(candles)
-    for i in range(n - 4, n - 1):
-        if i < 2:
-            continue
-        fe  = fast_e[i]
-        te  = trend_e[i]
-        ri  = rsi_v[i]
-        rp  = rsi_v[i - 1]
-        av  = atr_v[i]
-        if any(math.isnan(x) for x in [fe, te, ri, rp, av]):
-            continue
-        if av <= 0:
-            continue
+    i = len(candles) - 2   # last completed bar
+    if i < 2:
+        return None
 
-        lo  = lows[i]
-        hi  = highs[i]
-        cl  = closes[i]
+    h_cur  = hist[i]
+    h_prev = hist[i - 1]
+    te     = trend_e[i]
+    av     = atr_v[i]
+    cl     = closes[i]
 
-        # Long: uptrend, price pulled back to EMA21, RSI crossed above 45
-        if (cl > te
-                and lo <= fe * 1.001
-                and rp < RSI_ENTRY
-                and ri >= RSI_ENTRY):
-            swing_low = min(lows[max(0, i - 2):i + 1])
-            stop      = swing_low - 0.1 * av
-            risk      = cl - stop
-            if risk <= 0:
-                continue
-            return {
-                "direction": 1,
-                "stop":      stop,
-                "target":    cl + TP_RR * risk,
-                "signal_bar_idx": i,
-                "signal_bar_time": candles[i]["t"],
-                "signal_price": cl,
-                "atr": av,
-                "fast_ema": fe,
-                "trend_ema": te,
-                "rsi": ri,
-            }
+    if any(math.isnan(x) for x in [h_cur, h_prev, te, av]):
+        return None
+    if av <= 0:
+        return None
 
-        # Short: downtrend, price popped to EMA21, RSI crossed below 55
-        if (cl < te
-                and hi >= fe * 0.999
-                and rp > (100 - RSI_ENTRY)
-                and ri <= (100 - RSI_ENTRY)):
-            swing_high = max(highs[max(0, i - 2):i + 1])
-            stop       = swing_high + 0.1 * av
-            risk       = stop - cl
-            if risk <= 0:
-                continue
-            return {
-                "direction": -1,
-                "stop":      stop,
-                "target":    cl - TP_RR * risk,
-                "signal_bar_idx": i,
-                "signal_bar_time": candles[i]["t"],
-                "signal_price": cl,
-                "atr": av,
-                "fast_ema": fe,
-                "trend_ema": te,
-                "rsi": ri,
-            }
+    # Cooldown: skip if we closed a trade fewer than COOLDOWN_BARS bars ago
+    if last_close_bar_ts > 0:
+        bars_since_close = sum(1 for c in candles if c["t"] > last_close_bar_ts)
+        if bars_since_close < COOLDOWN_BARS:
+            return None
+
+    # Long: MACD histogram crosses above 0 AND price above EMA50
+    if h_prev <= 0 and h_cur > 0 and cl > te:
+        swing_low = min(lows[max(0, i - 4):i + 1])
+        stop      = swing_low - 0.1 * av
+        risk      = cl - stop
+        if risk <= 0:
+            return None
+        return {
+            "direction":  1,
+            "stop":       stop,
+            "target":     cl + TP_RR * risk,
+            "macd_hist":  round(h_cur, 4),
+            "trend_ema":  round(te, 2),
+            "atr":        round(av, 2),
+        }
+
+    # Short: MACD histogram crosses below 0 AND price below EMA50
+    if h_prev >= 0 and h_cur < 0 and cl < te:
+        swing_high = max(highs[max(0, i - 4):i + 1])
+        stop       = swing_high + 0.1 * av
+        risk       = stop - cl
+        if risk <= 0:
+            return None
+        return {
+            "direction":  -1,
+            "stop":       stop,
+            "target":     cl - TP_RR * risk,
+            "macd_hist":  round(h_cur, 4),
+            "trend_ema":  round(te, 2),
+            "atr":        round(av, 2),
+        }
 
     return None
 
@@ -242,18 +227,19 @@ def _now_iso() -> str:
 
 def init_state(capital: float, leverage: float) -> dict:
     return {
-        "equity":        capital,
-        "capital":       capital,
-        "leverage":      leverage,
-        "position":      None,       # open trade or null
-        "trades":        [],
-        "total_pnl":     0.0,
-        "total_fees":    0.0,
-        "peak_equity":   capital,
-        "max_dd_pct":    0.0,
-        "started_at":    _now_iso(),
-        "last_check":    None,
-        "status":        "flat",     # flat | long | short
+        "equity":             capital,
+        "capital":            capital,
+        "leverage":           leverage,
+        "position":           None,       # open trade or null
+        "trades":             [],
+        "total_pnl":          0.0,
+        "total_fees":         0.0,
+        "peak_equity":        capital,
+        "max_dd_pct":         0.0,
+        "started_at":         _now_iso(),
+        "last_check":         None,
+        "status":             "flat",     # flat | long | short
+        "last_close_bar_ts":  0,          # for cooldown after close
     }
 
 def load_state(capital: float, leverage: float) -> dict:
@@ -376,8 +362,9 @@ def run_check(state: dict, force: bool = False) -> dict:
                 "equity_after": round(state["equity"], 2),
             }
             state["trades"].append(trade_rec)
-            state["position"] = None
-            state["status"]   = "flat"
+            state["position"]          = None
+            state["status"]            = "flat"
+            state["last_close_bar_ts"] = last_bar["t"]
             _db.append_scalper_trade(trade_rec)
 
             emoji = "WIN" if pnl_usd > 0 else "LOSE"
@@ -388,13 +375,12 @@ def run_check(state: dict, force: bool = False) -> dict:
 
     # --- 3. Check for new signal (only if flat) -----------------------------
     if state["position"] is None:
-        sig = compute_signal(candles)
+        last_close_bar_ts = state.get("last_close_bar_ts", 0)
+        sig = compute_signal(candles, last_close_bar_ts)
         if sig:
             direction = sig["direction"]
             dir_label = "LONG" if direction == 1 else "SHORT"
 
-            # Simulated entry: next candle open ~ current last bar close
-            # (in live, we'd place a limit order; here we use close as proxy)
             entry_px = last_close
             pos_size = state["equity"] * state["leverage"]
 
@@ -406,19 +392,17 @@ def run_check(state: dict, force: bool = False) -> dict:
                 "pos_size":     pos_size,
                 "entry_time":   _now_iso(),
                 "entry_bar_ts": last_bar["t"],
-                "signal_rsi":   round(sig["rsi"], 1),
-                "signal_atr":   round(sig["atr"], 1),
-                "fast_ema":     round(sig["fast_ema"], 1),
-                "trend_ema":    round(sig["trend_ema"], 1),
+                "macd_hist":    sig["macd_hist"],
+                "trend_ema":    sig["trend_ema"],
+                "signal_atr":   sig["atr"],
             }
             state["status"] = dir_label.lower()
 
-            risk      = abs(entry_px - sig["stop"])
-            reward    = abs(sig["target"] - entry_px)
+            risk = abs(entry_px - sig["stop"])
             print(f"[scalper]  >> OPEN {dir_label} @ {entry_px:.1f}  "
                   f"SL={sig['stop']:.1f}  TP={sig['target']:.1f}  "
                   f"R:R=1:{TP_RR}  Risk=${risk/entry_px*pos_size:.0f}  "
-                  f"RSI={sig['rsi']:.1f}")
+                  f"MACD={sig['macd_hist']:.4f}")
         else:
             print(f"[scalper]  -- No signal. Status: flat.")
 

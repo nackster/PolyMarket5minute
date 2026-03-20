@@ -1266,14 +1266,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="cards">
     <div class="card">
       <div class="lbl">Strategy</div>
-      <div class="val" style="font-size:13px;">Pullback to EMA</div>
-      <div style="color:#777;font-size:11px;margin-top:4px;">EMA21/100 + RSI14</div>
+      <div class="val" style="font-size:13px;">MACD Momentum</div>
+      <div style="color:#777;font-size:11px;margin-top:4px;">MACD(12,26,9) + EMA50</div>
     </div>
     <div class="card">
       <div class="lbl">Signal Logic</div>
       <div class="val" style="font-size:11px;line-height:1.6;">
-        Long: price &le; EMA21, RSI cross &uarr;45<br>
-        Short: price &ge; EMA21, RSI cross &darr;55
+        Long: MACD hist &uarr;0, price &gt; EMA50<br>
+        Short: MACD hist &darr;0, price &lt; EMA50
       </div>
     </div>
     <div class="card">
@@ -1283,8 +1283,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="card">
       <div class="lbl">Backtest Edge</div>
-      <div class="val" style="color:#4fc97e;">$647/day avg</div>
-      <div style="color:#777;font-size:11px;margin-top:4px;">37.1% WR, -21% MaxDD</div>
+      <div class="val" style="color:#4fc97e;">$820/day avg</div>
+      <div style="color:#777;font-size:11px;margin-top:4px;">35.5% WR, -18% MaxDD</div>
     </div>
     <div class="card">
       <div class="lbl">Total P&amp;L</div>
@@ -1348,8 +1348,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   {% endif %}
 
   <div class="updated">
-    Strategy: Pullback to EMA (EMA21/100, RSI14, ATR14) &mdash;
-    TP 3R, SL swing&#177;0.1&times;ATR, Timeout 30 bars (2.5h) &mdash;
+    Strategy: MACD Momentum (12,26,9 + EMA50, ATR14) &mdash;
+    TP 3R, SL swing(5-bar)&#177;0.1&times;ATR, Timeout 30 bars (2.5h), Cooldown 2 bars &mdash;
     Fee: +0.02% maker entry, -0.05% taker exit
   </div>
 </div>
