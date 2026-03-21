@@ -32,7 +32,8 @@ data/*.csv
 data/*.json
 !data/.gitkeep
 
-# Trade logs (contain position data)
+# Trade logs and data files (too large for GitHub)
+trades/
 paper_trades.json
 live_trades.json
 real_trades.json
