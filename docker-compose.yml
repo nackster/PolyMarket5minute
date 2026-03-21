@@ -41,6 +41,24 @@ services:
       - tradedata:/app/trades
     command: python real_trade_hourly.py --mode live --size 5
 
+  # ── Crypto momentum bot ─────────────────────────────────────────────────
+  momentum:
+    build: .
+    restart: always
+    env_file: .env
+    volumes:
+      - tradedata:/app/trades
+    command: python crypto_momentum_bot.py --daemon
+
+  # ── BB Reversal ETH scalper ──────────────────────────────────────────────
+  bb:
+    build: .
+    restart: always
+    env_file: .env
+    volumes:
+      - tradedata:/app/trades
+    command: python scalper_bb.py --daemon --capital 25000 --leverage 5
+
   # ── Web dashboard ───────────────────────────────────────────────────────
   web:
     build: .
