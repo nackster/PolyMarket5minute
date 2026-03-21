@@ -24,6 +24,7 @@ TRADES_FILE_HL_BT   = "trades/hl_momentum_backtest.json"
 TRADES_FILE_HL_LIVE = "trades/hl_momentum_live.json"
 TRADES_FILE_MOMENTUM= "trades/crypto_momentum_live.json"
 TRADES_FILE_SCALPER = "trades/scalper_live.json"
+TRADES_FILE_BB      = "trades/scalper_bb_live.json"
 
 
 # ── Data helpers ─────────────────────────────────────────────────────────────
@@ -208,6 +209,31 @@ def get_scalper_live() -> dict:
         return empty
 
 
+def get_bb_live() -> dict:
+    """Load BB Reversal bot state — DB first, JSON fallback."""
+    empty = {
+        "equity": 25000, "capital": 25000, "leverage": 5,
+        "position": None, "trades": [], "total_pnl": 0,
+        "total_fees": 0, "peak_equity": 25000, "max_dd_pct": 0,
+        "status": "flat", "last_check": None, "unrealized_pnl": 0,
+        "current_price": None,
+    }
+    try:
+        import db as _db
+        db_state = _db.get_bb_state()
+        if db_state is not None:
+            return db_state
+    except Exception:
+        pass
+    if not os.path.exists(TRADES_FILE_BB):
+        return empty
+    try:
+        with open(TRADES_FILE_BB) as f:
+            return json.load(f)
+    except Exception:
+        return empty
+
+
 def fmt_time(ts):
     if not ts:
         return "—"
@@ -351,7 +377,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     HL Perps <span class="tab-badge" style="background:#1f1a2e;color:#bc8cff;">HIST</span>
   </div>
   <div class="tab" onclick="switchTab('scalper', this)">
-    ETH Scalper <span class="tab-badge badge-paper">PAPER</span>
+    MACD Scalper <span class="tab-badge badge-paper">PAPER</span>
+  </div>
+  <div class="tab" onclick="switchTab('bb', this)">
+    BB Reversal <span class="tab-badge badge-paper">PAPER</span>
   </div>
 </div>
 
@@ -1354,6 +1383,136 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ═══ BB REVERSAL PANEL ══════════════════════════════════════════════════ -->
+<div class="panel" id="panel-bb">
+{% set bb = bb_data %}
+{% set bb_trades = bb.get('trades', []) %}
+{% set bb_equity = bb.get('equity', bb.get('capital', 25000)) %}
+{% set bb_capital = bb.get('capital', 25000) %}
+{% set bb_ret = (bb_equity - bb_capital) / bb_capital * 100 if bb_capital else 0 %}
+{% set bb_n = bb_trades | length %}
+{% set bb_wins = bb_trades | selectattr('pnl_usd', '>', 0) | list | length %}
+{% set bb_wr = (bb_wins / bb_n * 100) if bb_n > 0 else 0 %}
+{% set bb_dd = bb.get('max_dd_pct', 0) * 100 %}
+{% set bb_pnl = bb.get('total_pnl', 0) %}
+{% set bb_pos = bb.get('position') %}
+
+  <!-- Live status bar -->
+  <div style="background:#0f0f1a;border:1px solid #2a1d4a;border-radius:8px;padding:12px 18px;margin-bottom:18px;display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
+    <span style="color:#aaa;font-size:12px;">BB REVERSAL</span>
+    <span style="color:#d4b44a;font-weight:600;">Equity: ${{ "{:,.2f}".format(bb_equity) }}</span>
+    <span style="color:{% if bb_ret >= 0 %}#4fc97e{% else %}#e05252{% endif %};">{{ "{:+.2f}".format(bb_ret) }}%</span>
+    <span style="color:#aaa;">Trades: {{ bb_n }}{% if bb_n %} (WR {{ "{:.0f}".format(bb_wr) }}%){% endif %}</span>
+    <span style="color:#e05252;">MaxDD: -{{ "{:.1f}".format(bb_dd) }}%</span>
+    <span style="color:#aaa;">${{ "{:,.0f}".format(bb_capital) }} &times; {{ bb.get('leverage', 5) }}x leverage</span>
+    {% if bb_pos %}
+      {% set d = bb_pos.get('direction', 0) %}
+      {% set dir_label = 'LONG' if d == 1 else 'SHORT' %}
+      {% set unr = bb.get('unrealized_pnl', 0) %}
+      <span style="color:{% if d == 1 %}#4fc97e{% else %}#e05252{% endif %};font-weight:600;">
+        &#9679; {{ dir_label }} @ {{ "{:,.1f}".format(bb_pos.get('entry_price', 0)) }}
+        &nbsp;SL={{ "{:,.1f}".format(bb_pos.get('stop', 0)) }}
+        &nbsp;TP={{ "{:,.1f}".format(bb_pos.get('target', 0)) }}
+        &nbsp;UnrPnL=${{ "{:+.0f}".format(unr) }}
+      </span>
+    {% else %}
+      <span style="color:#777;">&#9675; FLAT — waiting for BB signal</span>
+    {% endif %}
+    <span style="color:#555;font-size:11px;margin-left:auto;">{{ bb.get('last_check', '')[:19] }} UTC</span>
+  </div>
+
+  <!-- Strategy info cards -->
+  <div class="cards">
+    <div class="card">
+      <div class="lbl">Strategy</div>
+      <div class="val" style="font-size:13px;">BB Reversal</div>
+      <div style="color:#777;font-size:11px;margin-top:4px;">BB(20, 1.8&sigma;) + RSI(14)</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Signal Logic</div>
+      <div class="val" style="font-size:11px;line-height:1.6;">
+        Long: close &lt; lower BB, RSI &lt; 35, bullish bar<br>
+        Short: close &gt; upper BB, RSI &gt; 65, bearish bar
+      </div>
+    </div>
+    <div class="card">
+      <div class="lbl">Risk / Reward</div>
+      <div class="val">1 : 1.5</div>
+      <div style="color:#777;font-size:11px;margin-top:4px;">SL = 0.8 &times; ATR</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Backtest Edge</div>
+      <div class="val" style="color:#4fc97e;">$565/day avg</div>
+      <div style="color:#777;font-size:11px;margin-top:4px;">56.2% WR, -5.4% MaxDD</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Total P&amp;L</div>
+      <div class="val" style="color:{% if bb_pnl >= 0 %}#4fc97e{% else %}#e05252{% endif %};">${{ "{:+,.2f}".format(bb_pnl) }}</div>
+    </div>
+  </div>
+
+  <!-- Trade log -->
+  {% if bb_trades %}
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Dir</th>
+        <th>Entry Time</th>
+        <th>Exit Time</th>
+        <th>Entry</th>
+        <th>Exit</th>
+        <th>Reason</th>
+        <th>Bars</th>
+        <th>P&amp;L $</th>
+        <th>Equity</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in bb_trades | reverse %}
+      <tr class="{% if t.pnl_usd > 0 %}win{% else %}lose{% endif %}">
+        <td><span style="color:#4fc97e;font-size:11px;">&#10003; CLOSED</span></td>
+        <td style="color:{% if t.direction == 'long' %}#4fc97e{% else %}#e05252{% endif %};">{{ t.direction | upper }}</td>
+        <td>{{ t.entry_time[:16] }}</td>
+        <td>{{ t.exit_time[:16] }}</td>
+        <td>${{ "{:,.1f}".format(t.entry_price) }}</td>
+        <td>${{ "{:,.1f}".format(t.exit_price) }}</td>
+        <td style="color:{% if t.exit_reason == 'TP' %}#4fc97e{% elif t.exit_reason == 'SL' %}#e05252{% else %}#d4b44a{% endif %};">{{ t.exit_reason }}</td>
+        <td>{{ t.get('bars_held', '—') }}</td>
+        <td style="color:{% if t.pnl_usd > 0 %}#4fc97e{% else %}#e05252{% endif %};">${{ "{:+,.2f}".format(t.pnl_usd) }}</td>
+        <td>${{ "{:,.2f}".format(t.get('equity_after', 0)) }}</td>
+      </tr>
+      {% endfor %}
+      {% if bb_pos %}
+      <tr style="opacity:0.7;">
+        <td><span style="color:#d4b44a;font-size:11px;animation:pulse 1.5s infinite;">&#9679; OPEN</span></td>
+        <td style="color:{% if bb_pos.direction == 1 %}#4fc97e{% else %}#e05252{% endif %};">{{ 'LONG' if bb_pos.direction == 1 else 'SHORT' }}</td>
+        <td>{{ bb_pos.entry_time[:16] }}</td>
+        <td>—</td>
+        <td>${{ "{:,.1f}".format(bb_pos.entry_price) }}</td>
+        <td>{{ "{:,.1f}".format(bb.get('current_price', 0)) }}</td>
+        <td>—</td>
+        <td>—</td>
+        <td style="color:{% if bb.get('unrealized_pnl', 0) >= 0 %}#4fc97e{% else %}#e05252{% endif %};">${{ "{:+,.2f}".format(bb.get('unrealized_pnl', 0)) }}</td>
+        <td>${{ "{:,.2f}".format(bb_equity) }}</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    No BB trades yet.<br>
+    Run: <code style="color:#4fc97e;">python scalper_bb.py --daemon --capital 25000 --leverage 5</code>
+  </div>
+  {% endif %}
+
+  <div class="updated">
+    Strategy: BB Reversal (BB 20/1.8&sigma; + RSI14, ATR14) &mdash;
+    TP 1.5R, SL 0.8&times;ATR, Timeout 20 bars (1.67h), Cooldown 2 bars &mdash;
+    Fee: +0.02% maker entry, -0.05% taker exit
+  </div>
+</div>
+
 <script>
 function switchTab(name, el) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1379,13 +1538,14 @@ def dashboard():
     hl_live_data = get_hl_live()
     ml_data      = get_momentum_live()
     sc_data      = get_scalper_live()
+    bb_data      = get_bb_live()
     return render_template_string(
         DASHBOARD_HTML,
         m5_state=m5_state, m5_stats=m5_stats, m5_trades=m5_trades,
         hr_state=hr_state, hr_stats=hr_stats, hr_trades=hr_trades,
         hl_state=hl_state, hl_stats=hl_stats, hl_trades=hl_trades,
         bt_data=bt_data, hl_bt_data=hl_bt_data, hl_live_data=hl_live_data,
-        ml_data=ml_data, sc_data=sc_data,
+        ml_data=ml_data, sc_data=sc_data, bb_data=bb_data,
         fmt_time=fmt_time, fmt_move=fmt_move,
     )
 
@@ -1426,6 +1586,11 @@ def api_hl_backtest():
 @app.route("/api/scalper")
 def api_scalper():
     return jsonify(get_scalper_live())
+
+
+@app.route("/api/bb")
+def api_bb():
+    return jsonify(get_bb_live())
 
 
 @app.route("/health")
