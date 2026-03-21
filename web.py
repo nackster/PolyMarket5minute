@@ -1257,7 +1257,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         &nbsp;UnrPnL=${{ "{:+.0f}".format(unr) }}
       </span>
     {% else %}
-      <span style="color:#777;">&#9675; FLAT — waiting for EMA pullback signal</span>
+      <span style="color:#777;">&#9675; FLAT — waiting for MACD signal</span>
     {% endif %}
     <span style="color:#555;font-size:11px;margin-left:auto;">{{ sc.get('last_check', '')[:19] }} UTC</span>
   </div>
